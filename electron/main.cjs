@@ -1,3 +1,4 @@
+
 const { app, BrowserWindow, ipcMain, desktopCapturer, dialog } = require('electron'); 
 const path = require('path');
 const { exec } = require('child_process');
@@ -13,12 +14,6 @@ const ffprobePath = require('ffprobe-static').path.replace('app.asar', 'app.asar
 ffmpeg.setFfmpegPath(ffmpegPath);
 ffmpeg.setFfprobePath(ffprobePath);
 
-// --- CRITICAL FIX: DISABLE GPU ACCELERATION ---
-// This prevents the "Frozen Video / Playing Audio" bug caused by 
-// the GPU decoder getting confused when stream timestamps reset.
-app.disableHardwareAcceleration();
-// ----------------------------------------------
-
 let mainWindow;
 let wss; 
 let guestWs; 
@@ -32,6 +27,7 @@ const WEB_PORT = 8080;
 function startWebServer() {
   const distPath = path.join(__dirname, '../dist');
   
+  // CORS Middleware for captureStream compatibility
   expressApp.use((req, res, next) => {
       res.header("Access-Control-Allow-Origin", "*");
       res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept");
@@ -43,12 +39,13 @@ function startWebServer() {
   // --- VIDEO STREAMING ENDPOINT ---
   expressApp.get('/stream', (req, res) => {
       const filePath = req.query.file;
-      const startTime = req.query.startTime || 0; 
+      const startTime = req.query.startTime || 0; // Start time in seconds
 
       if (!filePath || !fs.existsSync(filePath)) {
           return res.status(404).send('File not found');
       }
 
+      // Check file metadata first
       ffmpeg.ffprobe(filePath, (err, metadata) => {
           if (err) {
               console.error("FFprobe Error:", err);
@@ -57,51 +54,45 @@ function startWebServer() {
 
           res.contentType('video/mp4');
 
-          // USE INPUT SEEKING (-ss before -i)
-          // This is faster and prevents "decoding from start" lag
+          // Base command
           const command = ffmpeg(filePath)
-              .inputOptions([`-ss ${startTime}`]) 
+              .seekInput(startTime) // Jump to timestamp
               .format('mp4')
               .outputOptions([
-                  '-movflags +frag_keyframe+empty_moov+default_base_moof', 
-                  '-reset_timestamps 1', 
+                  '-movflags +frag_keyframe+empty_moov+default_base_moof', // Streamable MP4
+                  '-fflags +genpts', // Generate new timestamps
+                  '-avoid_negative_ts make_zero', // Ensure starts at 0
+                  '-tune zerolatency',
+                  // REMOVED: -frag_duration. Letting FFmpeg fragment on Keyframes is safer.
               ])
               .on('error', (err) => {
-                  if (err.message && !err.message.includes('Output stream closed')) {
+                  if (!err.message.includes('Output stream closed')) {
                       console.error('FFmpeg Error:', err);
                   }
               });
 
-          // FORCE TRANSCODE
-          // Using 'ultrafast' and 'baseline' profile for maximum seeking stability
+          // Codec Logic
+          const videoStream = metadata.streams.find(s => s.codec_type === 'video');
+          const isH264 = videoStream && videoStream.codec_name === 'h264';
+          
+          // ALWAYS TRANSCODE ON SEEK to ensure we generate a clean Keyframe at the cut point.
+          // Direct copy on seek is risky because I-frames might be far apart.
+          // We use 'ultrafast' so it feels like a copy.
+          
           command.videoCodec('libx264')
-                  .outputOptions([
-                      '-preset ultrafast', 
-                      '-tune zerolatency', 
-                      '-pix_fmt yuv420p', 
-                      '-profile:v baseline', // No B-frames (Critical)
-                      '-g 60',               // Keyframe every 2s
-                      '-sc_threshold 0',     // Strict GOP
-                      '-maxrate 4000k',      // Cap bitrate to prevent browser buffer choke
-                      '-bufsize 8000k'
-                  ])
-                  // Ensure even dimensions (odd pixels crash some decoders)
-                  .videoFilters('scale=trunc(iw/2)*2:trunc(ih/2)*2');
+             .outputOptions([
+                 '-preset ultrafast', 
+                 '-pix_fmt yuv420p',
+                 '-profile:v main', // Ensure browser compatibility
+                 '-g 30', // Keyframe every 30 frames (approx 1s)
+                 '-sc_threshold 0' // Strict GOP enforcement
+             ]);
 
-          // AUDIO: Force Stereo AAC
-          // Surround sound (5.1) often desyncs in browsers during seek
-          command.audioCodec('aac')
-                 .audioChannels(2)       
-                 .audioFrequency(44100)
-                 .audioBitrate('128k')
-                 .audioFilter('aresample=async=1');
+          // Audio: ALWAYS TRANSCODE to AAC to ensure perfect timestamp alignment with video
+          command.audioCodec('aac').audioBitrate('128k');
 
+          // Pipe directly to response
           command.pipe(res, { end: true });
-
-          // Cleanup FFmpeg process if browser cancels request
-          req.on('close', () => {
-              try { command.kill(); } catch(e) {}
-          });
       });
   });
 
@@ -131,13 +122,13 @@ function createWindow() {
     width: 1280,
     height: 720,
     fullscreen: true,
-    show: false,        
+    show: false,       
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
       nodeIntegration: false,
       contextIsolation: true,
       sandbox: false, 
-      webSecurity: false 
+      webSecurity: false // Disable webSecurity to allow capturing localhost video stream
     },
     autoHideMenuBar: true,
     backgroundColor: '#000000',
@@ -157,12 +148,13 @@ function createWindow() {
   }
 }
 
+// ENABLE MACOS SYSTEM AUDIO LOOPBACK
 if (process.platform === 'darwin') {
     app.commandLine.appendSwitch('enable-features', 'MacLoopbackAudioForScreenShare,MacSckSystemAudioLoopbackOverride');
 }
 
 app.whenReady().then(() => {
-  startWebServer(); 
+  startWebServer(); // Always start server for local streaming
   createWindow();
 
   app.on('activate', function () {
@@ -176,7 +168,9 @@ app.on('window-all-closed', function () {
 
 // --- IPC Handlers ---
 
-ipcMain.on('toggle-web-server', (event, enable) => { });
+ipcMain.on('toggle-web-server', (event, enable) => {
+    // Server is now always on for host streaming capabilities
+});
 
 ipcMain.on('set-window-opacity', (event, opacity) => {
     if (mainWindow && !mainWindow.isDestroyed()) {
@@ -186,6 +180,7 @@ ipcMain.on('set-window-opacity', (event, opacity) => {
 
 // --- FILE PICKER HANDLERS ---
 
+// Video File Picker
 ipcMain.handle('open-video-file', async () => {
   const { canceled, filePaths } = await dialog.showOpenDialog({
     properties: ['openFile'],
@@ -198,6 +193,7 @@ ipcMain.handle('open-video-file', async () => {
   }
 });
 
+// Get Video Duration via FFprobe
 ipcMain.handle('get-video-duration', async (event, filePath) => {
     return new Promise((resolve, reject) => {
         ffmpeg.ffprobe(filePath, (err, metadata) => {
@@ -211,6 +207,7 @@ ipcMain.handle('get-video-duration', async (event, filePath) => {
     });
 });
 
+// Subtitle File Picker
 ipcMain.handle('open-subtitle-file', async () => {
   const { canceled, filePaths } = await dialog.showOpenDialog({
     properties: ['openFile'],
