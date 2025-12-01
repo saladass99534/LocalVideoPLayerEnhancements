@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useRef } from 'react'; 
 import SimplePeer from 'simple-peer'; 
 import {  
@@ -18,6 +17,49 @@ interface HostRoomProps {
 } 
 
 type SidebarTab = 'chat' | 'members'; 
+
+// --- SUBTITLE HELPERS (NEW) ---
+// Converts VTT/SRT time format (00:15:23.456) to seconds
+const timeStrToSeconds = (timeStr: string) => {
+    const parts = timeStr.split(':');
+    let seconds = 0;
+    if (parts.length === 3) {
+        seconds += parseFloat(parts[0]) * 3600;
+        seconds += parseFloat(parts[1]) * 60;
+        seconds += parseFloat(parts[2]);
+    } else {
+        seconds += parseFloat(parts[0]) * 60;
+        seconds += parseFloat(parts[1]);
+    }
+    return seconds;
+};
+
+// Parses VTT content into a usable array of cue objects
+const parseVtt = (vttContent: string) => {
+    const cues: { startTime: number, endTime: number, text: string }[] = [];
+    if (!vttContent) return cues;
+    
+    const lines = vttContent.replace(/\r/g, '').split('\n');
+    for (let i = 0; i < lines.length; i++) {
+        if (lines[i].includes('-->')) {
+            const timeParts = lines[i].split(' --> ');
+            if (timeParts.length < 2) continue;
+
+            const startTime = timeStrToSeconds(timeParts[0]);
+            const endTime = timeStrToSeconds(timeParts[1].split(' ')[0]); // Handle extra VTT attributes
+            
+            let textLines: string[] = [];
+            let j = i + 1;
+            while (j < lines.length && lines[j].trim() !== '') {
+                textLines.push(lines[j]);
+                j++;
+            }
+            cues.push({ startTime, endTime, text: textLines.join('\n') });
+            i = j;
+        }
+    }
+    return cues;
+};
 
 const srtToVtt = (srtText: string) => { 
     if (!srtText) return ""; 
@@ -159,15 +201,15 @@ export const HostRoom: React.FC<HostRoomProps> = ({ onBack }) => {
 
   const [duration, setDuration] = useState(0); 
   const [currentTime, setCurrentTime] = useState(0); 
-  // Virtual Time Offset: The time at which the current FFmpeg stream starts
   const [streamOffset, setStreamOffset] = useState(0);
   const [isSeekDragging, setIsSeekDragging] = useState(false);
 
   const [isPlayingFile, setIsPlayingFile] = useState(false); 
   const [showCCMenu, setShowCCMenu] = useState(false); 
   const [ccSize, setCcSize] = useState<'small' | 'medium' | 'large'>('medium'); 
-  const [subtitleUrl, setSubtitleUrl] = useState<string | null>(null); 
-
+  
+  // --- SUBTITLE STATE (REFACTORED) ---
+  const [parsedCues, setParsedCues] = useState<{ startTime: number, endTime: number, text: string }[]>([]);
   const [currentSubtitleText, setCurrentSubtitleText] = useState(''); 
 
   const [audioInputDevices, setAudioInputDevices] = useState<MediaDeviceInfo[]>([]); 
@@ -198,6 +240,11 @@ export const HostRoom: React.FC<HostRoomProps> = ({ onBack }) => {
   const statsIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null); 
   const chatRef = useRef<ChatHandle>(null); 
   const lastStatsRef = useRef<{ timestamp: number; bytesSent: number } | null>(null); 
+  const subtitleRef = useRef(currentSubtitleText); // Use ref to prevent stale closures
+
+  useEffect(() => {
+    subtitleRef.current = currentSubtitleText;
+  }, [currentSubtitleText]);
 
   const electronAvailable = typeof window !== 'undefined' && window.electron !== undefined; 
   const isMac = typeof navigator !== 'undefined' && navigator.platform.toUpperCase().indexOf('MAC') >= 0; 
@@ -206,41 +253,6 @@ export const HostRoom: React.FC<HostRoomProps> = ({ onBack }) => {
   useEffect(() => {  
       broadcast({ type: 'cc_size', payload: ccSize });  
   }, [ccSize]);  
-
-  useEffect(() => { 
-    const video = fileVideoRef.current; 
-    if (!video || !subtitleUrl) return; 
-
-    // This logic needs a slight delay to allow the <track> element to be processed
-    const timer = setTimeout(() => { 
-        // Ensure textTracks are available
-        if (video.textTracks && video.textTracks.length > 0) { 
-            for (let i = 0; i < video.textTracks.length; i++) { 
-                const track = video.textTracks[i]; 
-                // We don't want to show browser-native subtitles, so we hide them
-                // but attach our listener to their cues.
-                if (track.mode === 'showing' || track.kind === 'subtitles') { 
-                    track.mode = 'hidden';  
-                    track.oncuechange = () => { 
-                        const activeCues = track.activeCues; 
-                        if (activeCues && activeCues.length > 0) { 
-                            // @ts-ignore 
-                            const rawText = activeCues[0].text; 
-                            // Clean up VTT formatting for plain text display
-                            const cleanText = rawText.replace(/<[^>]*>/g, '');  
-                            setCurrentSubtitleText(cleanText); 
-                            broadcast({ type: 'subtitle_update', payload: cleanText }); 
-                        } else { 
-                            setCurrentSubtitleText(''); 
-                            broadcast({ type: 'subtitle_update', payload: '' }); 
-                        } 
-                    }; 
-                } 
-            } 
-        } 
-    }, 500); 
-    return () => clearTimeout(timer); 
-  }, [subtitleUrl, fileStreamUrl]); // Re-run when stream (and thus video element) changes 
 
   useEffect(() => {  
     if (electronAvailable) window.electron.setWindowOpacity(browserFix ? 0.999 : 1.0);  
@@ -352,24 +364,35 @@ export const HostRoom: React.FC<HostRoomProps> = ({ onBack }) => {
   };  
 
   const handleFileTimeUpdate = () => {  
-      // Only update time if user is NOT dragging the slider
-      if (isSeekDragging) return;
+    if (isSeekDragging || !fileVideoRef.current) return;
 
-      if (fileVideoRef.current) { 
-          // If we are in HTTP streaming mode, we must add the stream offset
-          if (fileStreamUrl && fileStreamUrl.startsWith('http')) {
-              setCurrentTime(streamOffset + fileVideoRef.current.currentTime); 
-          } else {
-              // Native file:// playback
-              setCurrentTime(fileVideoRef.current.currentTime);
-              // Only rely on metadata for duration in native mode
-              if (!duration && isFinite(fileVideoRef.current.duration)) {
-                  setDuration(fileVideoRef.current.duration);
-              }
-          }
-          broadcast({ type: 'duration_sync', payload: duration });
-      } 
-  };  
+    const video = fileVideoRef.current;
+    let realTime = 0;
+
+    if (fileStreamUrl && fileStreamUrl.startsWith('http')) {
+        realTime = streamOffset + video.currentTime;
+        setCurrentTime(realTime); 
+    } else {
+        realTime = video.currentTime;
+        setCurrentTime(realTime);
+        if (!duration && isFinite(video.duration)) {
+            setDuration(video.duration);
+        }
+    }
+    broadcast({ type: 'duration_sync', payload: duration });
+
+    // --- NEW MANUAL SUBTITLE SYNC LOGIC ---
+    if (parsedCues.length > 0) {
+        const currentCue = parsedCues.find(cue => realTime >= cue.startTime && realTime <= cue.endTime);
+        const newSubtitleText = currentCue ? currentCue.text.replace(/<[^>]*>/g, '') : '';
+        
+        // Use ref to compare to prevent re-renders from stale state
+        if (newSubtitleText !== subtitleRef.current) {
+            setCurrentSubtitleText(newSubtitleText);
+            broadcast({ type: 'subtitle_update', payload: newSubtitleText });
+        }
+    }
+  }; 
 
   // --- VISUAL ONLY: Handles dragging the slider ---
   const handleFileSeekChange = (e: React.ChangeEvent<HTMLInputElement>) => {  
@@ -433,7 +456,9 @@ export const HostRoom: React.FC<HostRoomProps> = ({ onBack }) => {
         videoEl.addEventListener('loadeddata', handleNewData, { once: true });
 
         return () => {
-            videoEl.removeEventListener('loadeddata', handleNewData);
+            if (videoEl) {
+              videoEl.removeEventListener('loadeddata', handleNewData);
+            }
         };
     }
   }, [fileStreamUrl, isSharing, selectedSourceId]); // This effect re-runs every time the video element is re-created
@@ -451,29 +476,28 @@ export const HostRoom: React.FC<HostRoomProps> = ({ onBack }) => {
   };  
 
   const loadSubtitle = async () => {  
-      if (!electronAvailable) return;  
-        
-      const result = await window.electron.openSubtitleFile();  
-        
-      if (result && result.content) {  
-          try {  
-              let text = result.content;  
-              if (result.path.endsWith('.srt')) {  
-                  text = srtToVtt(text);  
-              }  
-              const blob = new Blob([text], { type: 'text/vtt' });  
-              const url = URL.createObjectURL(blob);  
-              setSubtitleUrl(url);  
-          } catch (e) {  
-              console.error("Failed to process subtitles", e);  
-              alert("Failed to load subtitle file.");  
-          }  
-      }  
-      setShowCCMenu(false);  
-  };  
+    if (!electronAvailable) return;  
+      
+    const result = await window.electron.openSubtitleFile();  
+      
+    if (result && result.content) {  
+        try {  
+            let text = result.content;  
+            if (result.path.endsWith('.srt')) {  
+                text = srtToVtt(text);  
+            }  
+            const cues = parseVtt(text);
+            setParsedCues(cues);
+        } catch (e) {  
+            console.error("Failed to process subtitles", e);  
+            alert("Failed to load subtitle file.");  
+        }  
+    }  
+    setShowCCMenu(false);  
+  }; 
 
   const removeSubtitle = () => { 
-      setSubtitleUrl(null); 
+      setParsedCues([]);
       setCurrentSubtitleText(''); 
       broadcast({ type: 'subtitle_update', payload: '' }); 
       setShowCCMenu(false); 
@@ -737,7 +761,7 @@ export const HostRoom: React.FC<HostRoomProps> = ({ onBack }) => {
       setFileRawPath(null);
       setSelectedSourceId(null);  
       setSourceTab('screen');   
-      setSubtitleUrl(null);  
+      setParsedCues([]);
       setCurrentSubtitleText('');  
       broadcast({ type: 'subtitle_update', payload: '' });  
       setMovieTitle("");   
@@ -798,7 +822,7 @@ export const HostRoom: React.FC<HostRoomProps> = ({ onBack }) => {
                 onPlay={() => setIsPlayingFile(true)}
                 onPause={() => setIsPlayingFile(false)}
               >  
-                  {subtitleUrl && <track key={subtitleUrl} label="English" kind="subtitles" src={subtitleUrl} default />}  
+                  {/* The <track> element is removed; subtitles are handled manually */}
               </video>
             )}
 
@@ -987,12 +1011,12 @@ export const HostRoom: React.FC<HostRoomProps> = ({ onBack }) => {
                         {audioSource === 'file' && (<button onClick={toggleFilePlay} className="p-2 hover:bg-white/10 rounded-full text-white transition-colors">{isPlayingFile ? <Pause size={20} fill="currentColor"/> : <Play size={20} fill="currentColor"/>}</button>)}  
                         {audioSource === 'file' && (
                           <div className="relative">
-                            <button onClick={() => setShowCCMenu(!showCCMenu)} className={`p-2 rounded-full transition-colors ${subtitleUrl || showCCMenu ? 'text-white bg-white/10' : 'text-gray-400 hover:text-white hover:bg-white/10'}`}><Captions size={20} /></button>
+                            <button onClick={() => setShowCCMenu(!showCCMenu)} className={`p-2 rounded-full transition-colors ${parsedCues.length > 0 || showCCMenu ? 'text-white bg-white/10' : 'text-gray-400 hover:text-white hover:bg-white/10'}`}><Captions size={20} /></button>
                             {showCCMenu && (
                                 <div className="absolute bottom-full left-1/2 -ml-24 mb-4 w-48 bg-[#151618] border border-white/10 rounded-xl p-3 shadow-2xl">
                                     <div className="flex flex-col gap-2">
                                         <button onClick={loadSubtitle} className="flex items-center gap-2 w-full p-2 rounded hover:bg-white/10 text-xs text-left"><Plus size={14} className="text-blue-400"/> Add Subs (.vtt/.srt)</button>
-                                        {subtitleUrl && (
+                                        {parsedCues.length > 0 && (
                                             <>
                                                 <button onClick={removeSubtitle} className="flex items-center gap-2 w-full p-2 rounded hover:bg-white/10 text-xs text-left text-red-400"><Trash2 size={14} /> Remove Subtitles</button>
                                                 <div className="h-px bg-white/10 my-1"></div>
