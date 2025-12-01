@@ -158,6 +158,9 @@ export const HostRoom: React.FC<HostRoomProps> = ({ onBack }) => {
 
   const [duration, setDuration] = useState(0); 
   const [currentTime, setCurrentTime] = useState(0); 
+  // Virtual Time Offset: The time at which the current FFmpeg stream starts
+  const [streamOffset, setStreamOffset] = useState(0);
+
   const [isPlayingFile, setIsPlayingFile] = useState(false); 
   const [showCCMenu, setShowCCMenu] = useState(false); 
   const [ccSize, setCcSize] = useState<'small' | 'medium' | 'large'>('medium'); 
@@ -344,13 +347,18 @@ export const HostRoom: React.FC<HostRoomProps> = ({ onBack }) => {
 
   const handleFileTimeUpdate = () => {  
       if (fileVideoRef.current) { 
-          // Use Math.max to prevent weird jumps to 0 if stream resets
-          const time = fileVideoRef.current.currentTime;
-          setCurrentTime(time); 
-          if (fileVideoRef.current.duration && isFinite(fileVideoRef.current.duration)) { 
-              setDuration(fileVideoRef.current.duration);
-              broadcast({ type: 'duration_sync', payload: fileVideoRef.current.duration }); 
-          } 
+          // If we are in HTTP streaming mode, we must add the stream offset
+          if (fileStreamUrl && fileStreamUrl.startsWith('http')) {
+              setCurrentTime(streamOffset + fileVideoRef.current.currentTime); 
+          } else {
+              // Native file:// playback
+              setCurrentTime(fileVideoRef.current.currentTime);
+              // Only rely on metadata for duration in native mode
+              if (!duration && isFinite(fileVideoRef.current.duration)) {
+                  setDuration(fileVideoRef.current.duration);
+              }
+          }
+          broadcast({ type: 'duration_sync', payload: duration });
       } 
   };  
 
@@ -360,23 +368,18 @@ export const HostRoom: React.FC<HostRoomProps> = ({ onBack }) => {
       
       // Smart Seeking for Streaming
       if (fileStreamUrl && fileStreamUrl.startsWith('http')) {
-          // If we are streaming via FFmpeg, random seeking might not work well with fragmented MP4
-          // unless the browser supports Range requests perfectly on the stream.
-          // For a robust implementation with "buttery smooth" goal, we force a re-request 
-          // from the new timestamp if the seek distance is significant.
-          
-          if (fileVideoRef.current) {
-              const diff = Math.abs(fileVideoRef.current.currentTime - time);
-              // Small jumps can be handled by browser buffer, large jumps need new stream
-              if (diff > 5 && fileRawPath) {
-                  // Construct new stream URL starting from this time
-                  const newUrl = `http://127.0.0.1:8080/stream?file=${encodeURIComponent(fileRawPath)}&startTime=${time}`;
-                  fileVideoRef.current.src = newUrl;
-                  fileVideoRef.current.play();
-                  setIsPlayingFile(true);
-              } else {
-                  fileVideoRef.current.currentTime = time;
-              }
+          if (fileVideoRef.current && fileRawPath) {
+              // Update the offset to match where we dragged
+              setStreamOffset(time);
+              
+              // Force a new stream from the backend starting at the seek timestamp
+              // Adding _t param forces the browser to treat it as a new resource, flushing buffer
+              const newUrl = `http://127.0.0.1:8080/stream?file=${encodeURIComponent(fileRawPath)}&startTime=${time}&_t=${Date.now()}`;
+              
+              fileVideoRef.current.src = newUrl;
+              fileVideoRef.current.load();
+              fileVideoRef.current.play().catch(console.error);
+              setIsPlayingFile(true);
           }
       } else {
           // Local native file playback (file://)
@@ -689,6 +692,7 @@ export const HostRoom: React.FC<HostRoomProps> = ({ onBack }) => {
       setMovieTitle("");   
       setIsSharing(false);  
       lastStatsRef.current = null;  
+      setStreamOffset(0);
   };  
 
   const toggleMute = () => { if (localVolume > 0) setLocalVolume(0); else setLocalVolume(0.5); };  
@@ -729,7 +733,7 @@ export const HostRoom: React.FC<HostRoomProps> = ({ onBack }) => {
         <div ref={containerRef} className="flex-1 relative bg-black flex items-center justify-center overflow-hidden group select-none"  
             onMouseMove={handleMouseMove} onClick={() => setShowControls(!showControls)} onMouseEnter={clearControlsTimeout} onMouseLeave={resetControlsTimeout}>  
               
-            <video ref={fileVideoRef} src={fileStreamUrl || ''} className="absolute top-0 left-0 w-full h-full -z-50 opacity-100 pointer-events-none" style={{ visibility: 'visible' }} playsInline crossOrigin="anonymous" onTimeUpdate={handleFileTimeUpdate} onLoadedMetadata={() => fileVideoRef.current && setDuration(fileVideoRef.current.duration)}>  
+            <video ref={fileVideoRef} src={fileStreamUrl || ''} className="absolute top-0 left-0 w-full h-full -z-50 opacity-100 pointer-events-none" style={{ visibility: 'visible' }} playsInline crossOrigin="anonymous" onTimeUpdate={handleFileTimeUpdate}>  
                 {subtitleUrl && <track key={subtitleUrl} label="English" kind="subtitles" src={subtitleUrl} default />}  
             </video>  
 
@@ -771,7 +775,23 @@ export const HostRoom: React.FC<HostRoomProps> = ({ onBack }) => {
                         <div className="flex gap-4 px-6 py-4 border-b border-white/5">  
                             <button onClick={() => setSourceTab('screen')} className={`px-4 py-2 rounded-lg text-sm font-bold transition-all ${sourceTab === 'screen' ? 'bg-blue-600 text-white shadow-lg' : 'bg-white/5 text-gray-400 hover:bg-white/10'}`}>Screens</button>  
                             <button onClick={() => setSourceTab('window')} className={`px-4 py-2 rounded-lg text-sm font-bold transition-all ${sourceTab === 'window' ? 'bg-blue-600 text-white shadow-lg' : 'bg-white/5 text-gray-400 hover:bg-white/10'}`}>Windows</button>  
-                            <button onClick={async () => { if (!fileStreamUrl) { const filePath = await window.electron.openVideoFile(); if (filePath) { setFileRawPath(filePath); setFileStreamUrl(`http://127.0.0.1:8080/stream?file=${encodeURIComponent(filePath)}`); setMovieTitle(filePath.split(/[\\/]/).pop() || "Video File"); setSourceTab('file'); setSelectedSourceId('file'); } } else { setSourceTab('file'); } }} className={`px-4 py-2 rounded-lg text-sm font-bold transition-all ${sourceTab === 'file' ? 'bg-purple-600 text-white shadow-lg' : 'bg-white/5 text-gray-400 hover:bg-white/10'}`}><div className="flex items-center gap-2"><FileVideo size={16} /> Video File</div></button>  
+                            <button onClick={async () => { 
+                                if (!fileStreamUrl) { 
+                                    const filePath = await window.electron.openVideoFile(); 
+                                    if (filePath) { 
+                                        const dur = await window.electron.getVideoDuration(filePath);
+                                        setDuration(dur);
+                                        setStreamOffset(0);
+                                        setFileRawPath(filePath); 
+                                        setFileStreamUrl(`http://127.0.0.1:8080/stream?file=${encodeURIComponent(filePath)}&_t=${Date.now()}`); 
+                                        setMovieTitle(filePath.split(/[\\/]/).pop() || "Video File"); 
+                                        setSourceTab('file'); 
+                                        setSelectedSourceId('file'); 
+                                    } 
+                                } else { 
+                                    setSourceTab('file'); 
+                                } 
+                            }} className={`px-4 py-2 rounded-lg text-sm font-bold transition-all ${sourceTab === 'file' ? 'bg-purple-600 text-white shadow-lg' : 'bg-white/5 text-gray-400 hover:bg-white/10'}`}><div className="flex items-center gap-2"><FileVideo size={16} /> Video File</div></button>  
                             <div className="ml-auto flex items-center gap-2"><button onClick={prepareScreenShare} className={`p-2 rounded-lg bg-white/5 hover:bg-white/10 text-gray-400 hover:text-white transition-all ${isRefreshingSources ? 'animate-spin' : ''}`}><RefreshCw size={18}/></button></div>  
                         </div>  
                         {isMac && sourceTab === 'window' && audioSource === 'system' && (<div className="mx-6 mt-4 p-3 bg-orange-500/10 border border-orange-500/20 rounded-lg flex items-center gap-3 animate-in slide-in-from-top-2"><AlertTriangle className="text-orange-500 shrink-0" size={20} /><p className="text-xs text-orange-200"><span className="font-bold block text-orange-400 mb-0.5">Audio Limitation Detected</span>macOS cannot record audio from individual windows. Please use <b>Screens</b> or <b>Video File</b> mode.</p></div>)}  
@@ -783,12 +803,12 @@ export const HostRoom: React.FC<HostRoomProps> = ({ onBack }) => {
                                             <div className="aspect-video bg-black rounded-xl overflow-hidden border-2 border-purple-500 shadow-[0_0_30px_rgba(168,85,247,0.3)] mb-4">  
                                                 <video src={fileStreamUrl} className="w-full h-full object-contain" controls />  
                                             </div>  
-                                            <button onClick={(e) => { e.stopPropagation(); setFileStreamUrl(null); setFileRawPath(null); setSelectedSourceId(null); setMovieTitle(""); }} className="absolute top-2 right-2 p-2 bg-red-600 text-white rounded-full opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-700 shadow-lg" title="Remove File"><Trash2 size={16} /></button>  
+                                            <button onClick={(e) => { e.stopPropagation(); setFileStreamUrl(null); setFileRawPath(null); setSelectedSourceId(null); setMovieTitle(""); setStreamOffset(0); }} className="absolute top-2 right-2 p-2 bg-red-600 text-white rounded-full opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-700 shadow-lg" title="Remove File"><Trash2 size={16} /></button>  
                                             <p className="text-green-400 font-bold flex items-center justify-center gap-2"><Check size={16}/> File Ready</p>  
                                             <p className="text-gray-500 text-xs mt-1">Audio will be captured directly from file.</p>  
                                         </div>  
                                     ) : (  
-                                        <div className="text-center"><p className="text-gray-500 mb-4">Select a local video file for perfect quality.</p><Button onClick={async () => { const filePath = await window.electron.openVideoFile(); if (filePath) { setFileRawPath(filePath); setFileStreamUrl(`http://127.0.0.1:8080/stream?file=${encodeURIComponent(filePath)}`); setMovieTitle(filePath.split(/[\\/]/).pop() || "Video File"); setSourceTab('file'); setSelectedSourceId('file'); } }}>Choose File</Button></div>  
+                                        <div className="text-center"><p className="text-gray-500 mb-4">Select a local video file for perfect quality.</p><Button onClick={async () => { const filePath = await window.electron.openVideoFile(); if (filePath) { const dur = await window.electron.getVideoDuration(filePath); setDuration(dur); setStreamOffset(0); setFileRawPath(filePath); setFileStreamUrl(`http://127.0.0.1:8080/stream?file=${encodeURIComponent(filePath)}&_t=${Date.now()}`); setMovieTitle(filePath.split(/[\\/]/).pop() || "Video File"); setSourceTab('file'); setSelectedSourceId('file'); } }}>Choose File</Button></div>  
                                     )}  
                                 </div>  
                             ) : sourceTab === 'screen' ? (  
