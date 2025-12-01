@@ -211,10 +211,14 @@ export const HostRoom: React.FC<HostRoomProps> = ({ onBack }) => {
     const video = fileVideoRef.current; 
     if (!video || !subtitleUrl) return; 
 
+    // This logic needs a slight delay to allow the <track> element to be processed
     const timer = setTimeout(() => { 
+        // Ensure textTracks are available
         if (video.textTracks && video.textTracks.length > 0) { 
             for (let i = 0; i < video.textTracks.length; i++) { 
                 const track = video.textTracks[i]; 
+                // We don't want to show browser-native subtitles, so we hide them
+                // but attach our listener to their cues.
                 if (track.mode === 'showing' || track.kind === 'subtitles') { 
                     track.mode = 'hidden';  
                     track.oncuechange = () => { 
@@ -222,6 +226,7 @@ export const HostRoom: React.FC<HostRoomProps> = ({ onBack }) => {
                         if (activeCues && activeCues.length > 0) { 
                             // @ts-ignore 
                             const rawText = activeCues[0].text; 
+                            // Clean up VTT formatting for plain text display
                             const cleanText = rawText.replace(/<[^>]*>/g, '');  
                             setCurrentSubtitleText(cleanText); 
                             broadcast({ type: 'subtitle_update', payload: cleanText }); 
@@ -235,7 +240,7 @@ export const HostRoom: React.FC<HostRoomProps> = ({ onBack }) => {
         } 
     }, 500); 
     return () => clearTimeout(timer); 
-  }, [subtitleUrl]); 
+  }, [subtitleUrl, fileStreamUrl]); // Re-run when stream (and thus video element) changes 
 
   useEffect(() => {  
     if (electronAvailable) window.electron.setWindowOpacity(browserFix ? 0.999 : 1.0);  
