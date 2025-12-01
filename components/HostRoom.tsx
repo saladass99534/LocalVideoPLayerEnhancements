@@ -370,27 +370,26 @@ export const HostRoom: React.FC<HostRoomProps> = ({ onBack }) => {
       // Smart Seeking for Streaming
       if (fileStreamUrl && fileStreamUrl.startsWith('http')) {
           if (fileVideoRef.current && fileRawPath) {
-              // Update the offset to match where we dragged
               setStreamOffset(time);
               
-              // Hard Reset: Force browser to clear buffer to prevent "stuck frame"
+              // Hard Reset Video Element for fMP4 stability
               fileVideoRef.current.pause();
               
-              // Aggressive clear: remove src attribute first
+              // Remove src, load, then set new src
               fileVideoRef.current.removeAttribute('src');
               fileVideoRef.current.load();
 
               const newUrl = `http://127.0.0.1:8080/stream?file=${encodeURIComponent(fileRawPath)}&startTime=${time}&_t=${Date.now()}`;
               
-              // Longer timeout to allow browser to flush decoding pipeline
               setTimeout(() => {
                   if (fileVideoRef.current) {
                       fileVideoRef.current.src = newUrl;
-                      fileVideoRef.current.load(); // Load explicitly
+                      fileVideoRef.current.load(); 
+                      fileVideoRef.current.currentTime = 0; // Explicitly set to 0 relative to new stream
                       fileVideoRef.current.play().catch(console.error);
                       setIsPlayingFile(true);
                   }
-              }, 200); // 200ms delay for robustness
+              }, 200); 
           }
       } else {
           // Local native file playback (file://)
