@@ -9,6 +9,7 @@ contextBridge.exposeInMainWorld('electron', {
   // NEW: File Pickers
   openVideoFile: () => ipcRenderer.invoke('open-video-file'),
   openSubtitleFile: () => ipcRenderer.invoke('open-subtitle-file'),
+  getVideoDuration: (filePath) => ipcRenderer.invoke('get-video-duration', filePath),
 
   // Web Server
   toggleWebServer: (enable) => ipcRenderer.send('toggle-web-server', enable),

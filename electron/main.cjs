@@ -1,3 +1,4 @@
+
 const { app, BrowserWindow, ipcMain, desktopCapturer, dialog } = require('electron'); 
 const path = require('path');
 const { exec } = require('child_process');
@@ -51,18 +52,23 @@ function startWebServer() {
               return res.status(500).send('Error analyzing file');
           }
 
-          // Smart Transcode Logic
-          // Ideally we want to copy the video stream if it's already h264
-          // But browsers need fragmented mp4 for streaming via pipe
-          
           res.contentType('video/mp4');
 
+          // Base command
           const command = ffmpeg(filePath)
-              .seekInput(startTime) // SEEK: Jump to timestamp before processing
+              .inputOptions([
+                  '-re', // Read input at native frame rate (important for live streaming feel)
+                  `-ss ${startTime}` // Seek before input to be fast
+              ])
               .format('mp4')
               .outputOptions([
-                  '-movflags frag_keyframe+empty_moov+default_base_moof', // Fragmented MP4 for streaming
-                  '-reset_timestamps 1' // Reset timestamps so player thinks it starts at 0 (handled by frontend logic)
+                  '-movflags +frag_keyframe+empty_moov+default_base_moof', // Streamable MP4
+                  '-fflags +genpts', // Generate new timestamps
+                  '-avoid_negative_ts make_zero', // Ensure starts at 0
+                  '-tune zerolatency',
+                  '-max_muxing_queue_size 9999', // Prevent buffer overflows
+                  '-analyzeduration 100M', // Fast analysis
+                  '-probesize 100M'
               ])
               .on('error', (err) => {
                   if (!err.message.includes('Output stream closed')) {
@@ -70,27 +76,18 @@ function startWebServer() {
                   }
               });
 
-          // Check video codec
-          const videoStream = metadata.streams.find(s => s.codec_type === 'video');
-          const isH264 = videoStream && videoStream.codec_name === 'h264';
-          
-          if (isH264) {
-              // REMUX: Fast copy
-              command.videoCodec('copy');
-          } else {
-              // TRANSCODE: Convert to H.264
-              // ultrafast preset for "buttery smooth" realtime performance
-              command.videoCodec('libx264')
-                     .outputOptions(['-preset ultrafast', '-tune zerolatency', '-pix_fmt yuv420p']);
-          }
+          // Codec Logic
+          command.videoCodec('libx264')
+             .outputOptions([
+                 '-preset ultrafast', 
+                 '-pix_fmt yuv420p',
+                 '-profile:v main', // Ensure browser compatibility
+                 '-g 30', // Keyframe every 30 frames (approx 1s)
+                 '-sc_threshold 0' // Strict GOP enforcement
+             ]);
 
-          // Audio: Ensure AAC
-          const audioStream = metadata.streams.find(s => s.codec_type === 'audio');
-          if (audioStream && audioStream.codec_name === 'aac') {
-              command.audioCodec('copy');
-          } else {
-              command.audioCodec('aac').audioBitrate('128k');
-          }
+          // Audio: ALWAYS TRANSCODE to AAC to ensure perfect timestamp alignment with video
+          command.audioCodec('aac').audioBitrate('128k');
 
           // Pipe directly to response
           command.pipe(res, { end: true });
@@ -171,7 +168,6 @@ app.on('window-all-closed', function () {
 
 ipcMain.on('toggle-web-server', (event, enable) => {
     // Server is now always on for host streaming capabilities
-    // We can add logic here if we strictly want to toggle external access later
 });
 
 ipcMain.on('set-window-opacity', (event, opacity) => {
@@ -193,6 +189,20 @@ ipcMain.handle('open-video-file', async () => {
   } else {
     return filePaths[0];
   }
+});
+
+// Get Video Duration via FFprobe
+ipcMain.handle('get-video-duration', async (event, filePath) => {
+    return new Promise((resolve, reject) => {
+        ffmpeg.ffprobe(filePath, (err, metadata) => {
+            if (err) {
+                console.error("FFprobe error:", err);
+                resolve(0);
+            } else {
+                resolve(metadata.format.duration || 0);
+            }
+        });
+    });
 });
 
 // Subtitle File Picker
