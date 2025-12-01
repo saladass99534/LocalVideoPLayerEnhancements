@@ -95,13 +95,9 @@ function startWebServer() {
                      ]);
           }
 
-          // Audio: Ensure AAC
-          const audioStream = metadata.streams.find(s => s.codec_type === 'audio');
-          if (audioStream && audioStream.codec_name === 'aac') {
-              command.audioCodec('copy');
-          } else {
-              command.audioCodec('aac').audioBitrate('128k');
-          }
+          // Audio: ALWAYS TRANSCODE to AAC to ensure perfect timestamp alignment with video
+          // This fixes the "Stuck Frame" issue where copied audio packets desync from reset video timestamps.
+          command.audioCodec('aac').audioBitrate('128k');
 
           // Pipe directly to response
           command.pipe(res, { end: true });
