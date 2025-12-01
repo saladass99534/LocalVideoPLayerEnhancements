@@ -102,6 +102,7 @@ declare global {
       removeAllListeners: (channel: string) => void;
       
       openVideoFile: () => Promise<string | null>;
+      getVideoDuration: (filePath: string) => Promise<number>;
       openSubtitleFile: () => Promise<{ content: string; path: string } | null>;
     }
   }
