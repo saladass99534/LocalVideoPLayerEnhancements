@@ -1,3 +1,4 @@
+
 const { app, BrowserWindow, ipcMain, desktopCapturer, dialog } = require('electron'); 
 const path = require('path');
 const { exec } = require('child_process');
@@ -59,9 +60,10 @@ function startWebServer() {
               .format('mp4')
               .outputOptions([
                   '-movflags +frag_keyframe+empty_moov+default_base_moof', // Fragmented MP4 for streaming
-                  '-reset_timestamps 1', // Reset timestamps so player thinks it starts at 0
-                  '-avoid_negative_ts make_zero', // Critical for seeking stability
-                  // REMOVED: '-frag_duration 100000' -> Caused orphan frames. Rely on GOP size instead.
+                  '-fflags +genpts', // REGENERATE PTS: Critical for fixing "stuck frame" after seek
+                  '-avoid_negative_ts make_zero', // Shift timestamps to start at 0
+                  '-frag_duration 100000', // Force small fragments (0.1s) for instant render
+                  '-tune zerolatency' // Low latency tuning
               ])
               .on('error', (err) => {
                   if (!err.message.includes('Output stream closed')) {
@@ -69,23 +71,43 @@ function startWebServer() {
                   }
               });
 
-          // FORCE TRANSCODE: 
-          // 1. baseline profile disables B-frames (easiest for browser to decode)
-          // 2. -g 30 combined with frag_keyframe creates perfectly self-contained chunks
-          command.videoCodec('libx264')
-                  .outputOptions([
-                      '-preset ultrafast', 
-                      '-tune zerolatency', 
-                      '-pix_fmt yuv420p',
-                      '-profile:v baseline', 
-                      '-g 30', 
-                      '-sc_threshold 0' 
-                  ]);
+          // Check video codec
+          const videoStream = metadata.streams.find(s => s.codec_type === 'video');
+          const isH264 = videoStream && videoStream.codec_name === 'h264';
+          
+          if (isH264) {
+              // Even if H264, we might need to transcode to fix timestamp gaps during seeking
+              // But 'copy' is preferred for performance. 
+              // If stuck frames persist with 'copy', switch this to 'libx264'.
+              // For now, let's force transcode on seek if not at 0 to guarantee keyframes.
+              if (startTime > 0) {
+                   command.videoCodec('libx264')
+                     .outputOptions([
+                         '-preset ultrafast', 
+                         '-pix_fmt yuv420p', 
+                         '-g 30', // Force Keyframe every 30 frames (0.5s - 1s)
+                         '-sc_threshold 0' // Disable scene change detection to enforce GOP
+                     ]);
+              } else {
+                   command.videoCodec('copy');
+              }
+          } else {
+              // TRANSCODE: Convert to H.264
+              // ultrafast preset for "buttery smooth" realtime performance
+              // -g 30 forces a Keyframe every 30 frames.
+              // -sc_threshold 0 disables scene detection to strictly enforce GOP (fixes stuck frames).
+              command.videoCodec('libx264')
+                     .outputOptions([
+                         '-preset ultrafast', 
+                         '-pix_fmt yuv420p', 
+                         '-g 30', 
+                         '-sc_threshold 0' 
+                     ]);
+          }
 
-          // Audio: Transcode to AAC + Async Resample to align timestamps perfectly
-          command.audioCodec('aac')
-                 .audioBitrate('128k')
-                 .audioFilter('aresample=async=1');
+          // Audio: ALWAYS TRANSCODE to AAC to ensure perfect timestamp alignment with video
+          // This fixes the "Stuck Frame" issue where copied audio packets desync from reset video timestamps.
+          command.audioCodec('aac').audioBitrate('128k');
 
           // Pipe directly to response
           command.pipe(res, { end: true });
@@ -118,7 +140,7 @@ function createWindow() {
     width: 1280,
     height: 720,
     fullscreen: true,
-    show: false,        
+    show: false,       
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
       nodeIntegration: false,
