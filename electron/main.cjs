@@ -1,8 +1,3 @@
-Here is the full, updated **`main.cjs`**.
-
-This version includes the corrected FFmpeg logic: it forces transcoding, uses the `baseline` profile (no B-frames), removes manual fragmentation (to ensure every chunk starts with a keyframe), and adds audio resampling for sync.
-
-```javascript
 const { app, BrowserWindow, ipcMain, desktopCapturer, dialog } = require('electron'); 
 const path = require('path');
 const { exec } = require('child_process');
@@ -348,4 +343,3 @@ ipcMain.on('connect-to-host', (event, ip, port) => {
 ipcMain.on('guest-send-signal', (event, data) => {
   if (guestWs && guestWs.readyState === WebSocket.OPEN) guestWs.send(JSON.stringify(data));
 });
-```
