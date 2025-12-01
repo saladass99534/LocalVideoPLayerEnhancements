@@ -53,18 +53,16 @@ function startWebServer() {
           }
 
           // Smart Transcode Logic
-          // Ideally we want to copy the video stream if it's already h264
-          // But browsers need fragmented mp4 for streaming via pipe
-          
           res.contentType('video/mp4');
 
           const command = ffmpeg(filePath)
               .seekInput(startTime) // SEEK: Jump to timestamp before processing
               .format('mp4')
               .outputOptions([
-                  '-movflags frag_keyframe+empty_moov+default_base_moof', // Fragmented MP4 for streaming
-                  '-reset_timestamps 1', // Reset timestamps so player thinks it starts at 0 (handled by frontend logic)
-                  '-avoid_negative_ts make_zero' // Critical for seeking stability
+                  '-movflags +frag_keyframe+empty_moov+default_base_moof', // Fragmented MP4 for streaming
+                  '-reset_timestamps 1', // Reset timestamps so player thinks it starts at 0
+                  '-avoid_negative_ts make_zero', // Critical for seeking stability
+                  '-frag_duration 100000' // Force small fragments (0.1s) for instant render
               ])
               .on('error', (err) => {
                   if (!err.message.includes('Output stream closed')) {
@@ -78,13 +76,23 @@ function startWebServer() {
           
           if (isH264) {
               // REMUX: Fast copy
+              // Note: If input GOP is large, seeking might still be slow. 
+              // But for stuck frame issues, usually transcode is safer.
+              // For now, trust copy if H264, but if issues persist, we might force transcode.
               command.videoCodec('copy');
           } else {
               // TRANSCODE: Convert to H.264
               // ultrafast preset for "buttery smooth" realtime performance
-              // -g 30 forces a keyframe every 30 frames (approx 0.5s-1s) for faster seeking recovery
+              // -g 30 forces a Keyframe every 30 frames.
+              // -sc_threshold 0 disables scene detection to strictly enforce GOP (fixes stuck frames).
               command.videoCodec('libx264')
-                     .outputOptions(['-preset ultrafast', '-tune zerolatency', '-pix_fmt yuv420p', '-g 30']);
+                     .outputOptions([
+                         '-preset ultrafast', 
+                         '-tune zerolatency', 
+                         '-pix_fmt yuv420p', 
+                         '-g 30', 
+                         '-sc_threshold 0' 
+                     ]);
           }
 
           // Audio: Ensure AAC
@@ -174,7 +182,6 @@ app.on('window-all-closed', function () {
 
 ipcMain.on('toggle-web-server', (event, enable) => {
     // Server is now always on for host streaming capabilities
-    // We can add logic here if we strictly want to toggle external access later
 });
 
 ipcMain.on('set-window-opacity', (event, opacity) => {
