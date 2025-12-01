@@ -1,4 +1,3 @@
-
 const { app, BrowserWindow, ipcMain, desktopCapturer, dialog } = require('electron'); 
 const path = require('path');
 const { exec } = require('child_process');
@@ -27,7 +26,7 @@ const WEB_PORT = 8080;
 function startWebServer() {
   const distPath = path.join(__dirname, '../dist');
   
-  // CORS Middleware for captureStream compatibility
+  // CORS Middleware
   expressApp.use((req, res, next) => {
       res.header("Access-Control-Allow-Origin", "*");
       res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept");
@@ -39,78 +38,61 @@ function startWebServer() {
   // --- VIDEO STREAMING ENDPOINT ---
   expressApp.get('/stream', (req, res) => {
       const filePath = req.query.file;
-      const startTime = req.query.startTime || 0; // Start time in seconds
+      const startTime = req.query.startTime || 0; 
 
       if (!filePath || !fs.existsSync(filePath)) {
           return res.status(404).send('File not found');
       }
 
-      // Check file metadata first
+      // Check file metadata
       ffmpeg.ffprobe(filePath, (err, metadata) => {
           if (err) {
               console.error("FFprobe Error:", err);
               return res.status(500).send('Error analyzing file');
           }
 
-          // Smart Transcode Logic
           res.contentType('video/mp4');
 
           const command = ffmpeg(filePath)
-              .seekInput(startTime) // SEEK: Jump to timestamp before processing
+              .seekInput(startTime) 
               .format('mp4')
               .outputOptions([
-                  '-movflags +frag_keyframe+empty_moov+default_base_moof', // Fragmented MP4 for streaming
-                  '-fflags +genpts', // REGENERATE PTS: Critical for fixing "stuck frame" after seek
-                  '-avoid_negative_ts make_zero', // Shift timestamps to start at 0
-                  '-frag_duration 100000', // Force small fragments (0.1s) for instant render
-                  '-tune zerolatency' // Low latency tuning
+                  '-movflags +frag_keyframe+empty_moov+default_base_moof', 
+                  '-reset_timestamps 1', 
+                  '-avoid_negative_ts make_zero', 
               ])
               .on('error', (err) => {
-                  if (!err.message.includes('Output stream closed')) {
+                  if (err.message && !err.message.includes('Output stream closed')) {
                       console.error('FFmpeg Error:', err);
                   }
               });
 
-          // Check video codec
-          const videoStream = metadata.streams.find(s => s.codec_type === 'video');
-          const isH264 = videoStream && videoStream.codec_name === 'h264';
-          
-          if (isH264) {
-              // Even if H264, we might need to transcode to fix timestamp gaps during seeking
-              // But 'copy' is preferred for performance. 
-              // If stuck frames persist with 'copy', switch this to 'libx264'.
-              // For now, let's force transcode on seek if not at 0 to guarantee keyframes.
-              if (startTime > 0) {
-                   command.videoCodec('libx264')
-                     .outputOptions([
-                         '-preset ultrafast', 
-                         '-pix_fmt yuv420p', 
-                         '-g 30', // Force Keyframe every 30 frames (0.5s - 1s)
-                         '-sc_threshold 0' // Disable scene change detection to enforce GOP
-                     ]);
-              } else {
-                   command.videoCodec('copy');
-              }
-          } else {
-              // TRANSCODE: Convert to H.264
-              // ultrafast preset for "buttery smooth" realtime performance
-              // -g 30 forces a Keyframe every 30 frames.
-              // -sc_threshold 0 disables scene detection to strictly enforce GOP (fixes stuck frames).
-              command.videoCodec('libx264')
-                     .outputOptions([
-                         '-preset ultrafast', 
-                         '-pix_fmt yuv420p', 
-                         '-g 30', 
-                         '-sc_threshold 0' 
-                     ]);
-          }
+          // FORCE TRANSCODE - STRICT COMPATIBILITY MODE
+          // We removed 'zerolatency' and added 'cgop' to fix the seeking freeze.
+          command.videoCodec('libx264')
+                  .outputOptions([
+                      '-preset ultrafast', 
+                      '-pix_fmt yuv420p', 
+                      '-profile:v baseline', 
+                      '-level 3.0',      // MAX COMPATIBILITY
+                      '-g 30',           // Keyframe every 30 frames
+                      '-keyint_min 30',  // Strict minimum keyframe distance
+                      '-sc_threshold 0', // Disable scene detection (prevents weird cuts)
+                      '-flags +cgop'     // CLOSED GOP: Critical for seeking stability
+                  ]);
 
-          // Audio: ALWAYS TRANSCODE to AAC to ensure perfect timestamp alignment with video
-          // This fixes the "Stuck Frame" issue where copied audio packets desync from reset video timestamps.
-          command.audioCodec('aac').audioBitrate('128k');
+          // Audio: Transcode + Sync Fix
+          command.audioCodec('aac')
+                 .audioBitrate('128k')
+                 .audioFilter('aresample=async=1');
 
-          // Pipe directly to response
+          // Pipe to response
           command.pipe(res, { end: true });
+
+          // Cleanup if request closes
+          req.on('close', () => {
+              try { command.kill(); } catch(e) {}
+          });
       });
   });
 
@@ -140,13 +122,13 @@ function createWindow() {
     width: 1280,
     height: 720,
     fullscreen: true,
-    show: false,       
+    show: false,        
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
       nodeIntegration: false,
       contextIsolation: true,
       sandbox: false, 
-      webSecurity: false // Disable webSecurity to allow capturing localhost video stream
+      webSecurity: false 
     },
     autoHideMenuBar: true,
     backgroundColor: '#000000',
@@ -166,13 +148,12 @@ function createWindow() {
   }
 }
 
-// ENABLE MACOS SYSTEM AUDIO LOOPBACK
 if (process.platform === 'darwin') {
     app.commandLine.appendSwitch('enable-features', 'MacLoopbackAudioForScreenShare,MacSckSystemAudioLoopbackOverride');
 }
 
 app.whenReady().then(() => {
-  startWebServer(); // Always start server for local streaming
+  startWebServer(); 
   createWindow();
 
   app.on('activate', function () {
@@ -186,9 +167,7 @@ app.on('window-all-closed', function () {
 
 // --- IPC Handlers ---
 
-ipcMain.on('toggle-web-server', (event, enable) => {
-    // Server is now always on for host streaming capabilities
-});
+ipcMain.on('toggle-web-server', (event, enable) => { });
 
 ipcMain.on('set-window-opacity', (event, opacity) => {
     if (mainWindow && !mainWindow.isDestroyed()) {
@@ -198,7 +177,6 @@ ipcMain.on('set-window-opacity', (event, opacity) => {
 
 // --- FILE PICKER HANDLERS ---
 
-// Video File Picker
 ipcMain.handle('open-video-file', async () => {
   const { canceled, filePaths } = await dialog.showOpenDialog({
     properties: ['openFile'],
@@ -211,7 +189,6 @@ ipcMain.handle('open-video-file', async () => {
   }
 });
 
-// Get Video Duration via FFprobe
 ipcMain.handle('get-video-duration', async (event, filePath) => {
     return new Promise((resolve, reject) => {
         ffmpeg.ffprobe(filePath, (err, metadata) => {
@@ -225,7 +202,6 @@ ipcMain.handle('get-video-duration', async (event, filePath) => {
     });
 });
 
-// Subtitle File Picker
 ipcMain.handle('open-subtitle-file', async () => {
   const { canceled, filePaths } = await dialog.showOpenDialog({
     properties: ['openFile'],
