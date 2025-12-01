@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useRef } from 'react'; 
 import SimplePeer from 'simple-peer'; 
 import {  
@@ -372,14 +373,21 @@ export const HostRoom: React.FC<HostRoomProps> = ({ onBack }) => {
               // Update the offset to match where we dragged
               setStreamOffset(time);
               
-              // Force a new stream from the backend starting at the seek timestamp
-              // Adding _t param forces the browser to treat it as a new resource, flushing buffer
+              // Hard Reset: Force browser to clear buffer to prevent "stuck frame"
+              fileVideoRef.current.pause();
+              fileVideoRef.current.src = "";
+              fileVideoRef.current.load();
+
               const newUrl = `http://127.0.0.1:8080/stream?file=${encodeURIComponent(fileRawPath)}&startTime=${time}&_t=${Date.now()}`;
               
-              fileVideoRef.current.src = newUrl;
-              fileVideoRef.current.load();
-              fileVideoRef.current.play().catch(console.error);
-              setIsPlayingFile(true);
+              // Small timeout to allow buffer flush to register
+              setTimeout(() => {
+                  if (fileVideoRef.current) {
+                      fileVideoRef.current.src = newUrl;
+                      fileVideoRef.current.play().catch(console.error);
+                      setIsPlayingFile(true);
+                  }
+              }, 50);
           }
       } else {
           // Local native file playback (file://)
