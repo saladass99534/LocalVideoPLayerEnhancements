@@ -39,7 +39,6 @@ const THEMES: Record<string, { primary: string, glow: string, border: string, bg
   Thriller: { primary: 'text-emerald-400', glow: 'shadow-emerald-500/50', border: 'border-emerald-500/30', bg: 'bg-emerald-500', accent: 'accent-emerald-500' }, 
 }; 
 
-// --- STRICT VP9 PRIORITIZATION LOGIC ---
 const setVideoBitrate = (sdp: string, bitrate: number): string => {
     let sdpLines = sdp.split('\r\n');
     let videoMLineIndex = -1;
@@ -149,7 +148,7 @@ export const HostRoom: React.FC<HostRoomProps> = ({ onBack }) => {
   const [duration, setDuration] = useState(0); 
   const [currentTime, setCurrentTime] = useState(0); 
   const [streamOffset, setStreamOffset] = useState(0);
-  const [remountKey, setRemountKey] = useState(0); // Counter to force remount
+  const [remountKey, setRemountKey] = useState(0); 
 
   const [isPlayingFile, setIsPlayingFile] = useState(false); 
   const [showCCMenu, setShowCCMenu] = useState(false); 
@@ -335,7 +334,7 @@ export const HostRoom: React.FC<HostRoomProps> = ({ onBack }) => {
       if (fileStreamUrl && fileStreamUrl.startsWith('http')) {
           if (fileRawPath) {
               setStreamOffset(time);
-              setRemountKey(prev => prev + 1); // FORCE REMOUNT
+              setRemountKey(prev => prev + 1); 
               
               const newUrl = `http://127.0.0.1:8080/stream?file=${encodeURIComponent(fileRawPath)}&startTime=${time}&_t=${Date.now()}`;
               setFileStreamUrl(newUrl);
@@ -620,9 +619,8 @@ export const HostRoom: React.FC<HostRoomProps> = ({ onBack }) => {
         <div ref={containerRef} className="flex-1 relative bg-black flex items-center justify-center overflow-hidden group select-none"  
             onMouseMove={handleMouseMove} onClick={() => setShowControls(!showControls)} onMouseEnter={clearControlsTimeout} onMouseLeave={resetControlsTimeout}>  
               
-            {/* FORCE REMOUNT on seek using remountKey */}
             <video 
-                key={remountKey} 
+                key={remountKey} // NUCLEAR REMOUNT
                 ref={fileVideoRef} 
                 src={fileStreamUrl || ''} 
                 className="absolute top-0 left-0 w-full h-full -z-50 opacity-100 pointer-events-none" 
