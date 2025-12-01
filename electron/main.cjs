@@ -26,7 +26,6 @@ const WEB_PORT = 8080;
 function startWebServer() {
   const distPath = path.join(__dirname, '../dist');
   
-  // CORS Middleware
   expressApp.use((req, res, next) => {
       res.header("Access-Control-Allow-Origin", "*");
       res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept");
@@ -44,7 +43,6 @@ function startWebServer() {
           return res.status(404).send('File not found');
       }
 
-      // Check file metadata
       ffmpeg.ffprobe(filePath, (err, metadata) => {
           if (err) {
               console.error("FFprobe Error:", err);
@@ -53,13 +51,13 @@ function startWebServer() {
 
           res.contentType('video/mp4');
 
+          // USE INPUT OPTIONS FOR ACCURATE SEEKING
           const command = ffmpeg(filePath)
-              .seekInput(startTime) 
+              .inputOptions([`-ss ${startTime}`]) // Input seeking is faster and safer for transcoding
               .format('mp4')
               .outputOptions([
                   '-movflags +frag_keyframe+empty_moov+default_base_moof', 
                   '-reset_timestamps 1', 
-                  '-avoid_negative_ts make_zero', 
               ])
               .on('error', (err) => {
                   if (err.message && !err.message.includes('Output stream closed')) {
@@ -67,29 +65,31 @@ function startWebServer() {
                   }
               });
 
-          // FORCE TRANSCODE - STRICT COMPATIBILITY MODE
-          // We removed 'zerolatency' and added 'cgop' to fix the seeking freeze.
+          // ROBUST TRANSCODE SETTINGS
           command.videoCodec('libx264')
                   .outputOptions([
                       '-preset ultrafast', 
+                      '-tune zerolatency', 
                       '-pix_fmt yuv420p', 
-                      '-profile:v baseline', 
-                      '-level 3.0',      // MAX COMPATIBILITY
-                      '-g 30',           // Keyframe every 30 frames
-                      '-keyint_min 30',  // Strict minimum keyframe distance
-                      '-sc_threshold 0', // Disable scene detection (prevents weird cuts)
-                      '-flags +cgop'     // CLOSED GOP: Critical for seeking stability
-                  ]);
+                      '-profile:v baseline', // No B-frames
+                      '-g 60',               // Keyframe every 2s
+                      '-sc_threshold 0',     // Strict GOP
+                      '-maxrate 4000k',      // Prevent massive bitrate spikes
+                      '-bufsize 8000k'
+                  ])
+                  // SAFE SCALE FILTER: Ensures width/height are divisible by 2 (Critical for Web Players)
+                  .videoFilters('scale=trunc(iw/2)*2:trunc(ih/2)*2');
 
-          // Audio: Transcode + Sync Fix
+          // AUDIO: FORCE STEREO & RESAMPLE
+          // 5.1/7.1 Audio often causes browser buffer desync. Downmix to Stereo.
           command.audioCodec('aac')
+                 .audioChannels(2)       // Force Stereo
+                 .audioFrequency(44100)
                  .audioBitrate('128k')
                  .audioFilter('aresample=async=1');
 
-          // Pipe to response
           command.pipe(res, { end: true });
 
-          // Cleanup if request closes
           req.on('close', () => {
               try { command.kill(); } catch(e) {}
           });
