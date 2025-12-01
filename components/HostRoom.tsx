@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useRef } from 'react'; 
 import SimplePeer from 'simple-peer'; 
 import {  
@@ -58,7 +57,7 @@ const setVideoBitrate = (sdp: string, bitrate: number): string => {
     // 2. Identify VP9 Payload Type
     let vp9PayloadType = -1;
     let h264PayloadType = -1;
-     
+      
     for (const line of sdpLines) {
         if (line.startsWith('a=rtpmap:')) {
             if (line.includes('VP9/90000')) {
@@ -76,11 +75,11 @@ const setVideoBitrate = (sdp: string, bitrate: number): string => {
         const mLineParts = sdpLines[videoMLineIndex].split(' ');
         const header = mLineParts.slice(0, 3);
         let payloads = mLineParts.slice(3);
-         
+          
         // Remove VP9 from current position and put it first
         payloads = payloads.filter(p => parseInt(p) !== vp9PayloadType);
         payloads.unshift(vp9PayloadType.toString());
-         
+          
         sdpLines[videoMLineIndex] = [...header, ...payloads].join(' ');
     }
 
@@ -88,13 +87,13 @@ const setVideoBitrate = (sdp: string, bitrate: number): string => {
     if (bitrate > 0) {
         sdpLines = sdpLines.filter(line => !line.startsWith('b=AS:'));
         sdpLines.splice(videoMLineIndex + 1, 0, `b=AS:${bitrate}`);
-         
+          
         // Apply strict google params to preferred codec
         const targetPayload = vp9PayloadType !== -1 ? vp9PayloadType : h264PayloadType;
         if (targetPayload !== -1) {
             let fmtpIndex = sdpLines.findIndex(l => l.startsWith(`a=fmtp:${targetPayload}`));
             const params = `x-google-min-bitrate=${bitrate};x-google-start-bitrate=${bitrate};x-google-max-bitrate=${bitrate}`;
-             
+              
             if (fmtpIndex !== -1) {
                 if (!sdpLines[fmtpIndex].includes('x-google-min-bitrate')) {
                     sdpLines[fmtpIndex] += `; ${params}`;
@@ -372,28 +371,30 @@ export const HostRoom: React.FC<HostRoomProps> = ({ onBack }) => {
           if (fileVideoRef.current && fileRawPath) {
               setStreamOffset(time);
               
-              // AGGRESSIVE FLUSH STRATEGY for fMP4
-              const video = fileVideoRef.current;
-              video.pause();
+              // 1. Pause and completely detach the source
+              fileVideoRef.current.pause();
+              fileVideoRef.current.removeAttribute('src');
+              fileVideoRef.current.load(); // This flushes the browser's video buffer
               
-              // 1. Remove Source
-              video.removeAttribute('src');
-              video.load(); // Flush internal buffers
+              // 2. Clear the state momentarily to force React to unmount/remount if needed
+              setFileStreamUrl(null);
 
-              // 2. Generate new URL (with cache buster)
+              // 3. Construct new URL with a random cache-buster
               const newUrl = `http://127.0.0.1:8080/stream?file=${encodeURIComponent(fileRawPath)}&startTime=${time}&_t=${Date.now()}`;
               
-              // 3. Wait a tiny bit for the renderer to clear the previous frame
+              // 4. Slight delay to ensure the browser has fully "let go" of the previous stream
               setTimeout(() => {
-                  if (video) {
-                      video.src = newUrl;
-                      video.load();
-                      // Video element time is always relative to the chunk start (0)
-                      // video.currentTime = 0; 
-                      video.play().catch(console.error);
-                      setIsPlayingFile(true);
-                  }
-              }, 100); 
+                  setFileStreamUrl(newUrl);
+                  
+                  // Wait for React to update the DOM with the new URL
+                  setTimeout(() => {
+                      if (fileVideoRef.current) {
+                          fileVideoRef.current.currentTime = 0; // Crucial: Tell browser we are at start of NEW stream
+                          fileVideoRef.current.play().catch(console.error);
+                          setIsPlayingFile(true);
+                      }
+                  }, 100);
+              }, 50); 
           }
       } else {
           // Local native file playback (file://)
@@ -543,7 +544,7 @@ export const HostRoom: React.FC<HostRoomProps> = ({ onBack }) => {
   // --- AUDIO MONITORING FIX: PREVIEW VOLUME ---
   useEffect(() => {  
       if (fileVideoRef.current) fileVideoRef.current.volume = 1.0;  
-       
+        
       // Control preview volume for ALL modes (Screen, File, or VB-Cable)
       if (videoRef.current) {  
           videoRef.current.volume = localVolume;  
@@ -563,7 +564,7 @@ export const HostRoom: React.FC<HostRoomProps> = ({ onBack }) => {
                 sendDataToPeer(p, { type: 'theme_change', payload: currentTheme });  
                 if(streamRef.current) sendDataToPeer(p, { type: 'bitrate_sync', payload: streamBitrateRef.current });  
                 sendDataToPeer(p, { type: 'cc_size', payload: ccSize });  
-                 
+                  
                 if (isSharing && movieTitle) { 
                     sendDataToPeer(p, { type: 'metadata', payload: { title: movieTitle } }); 
                 } 
