@@ -392,6 +392,47 @@ export const HostRoom: React.FC<HostRoomProps> = ({ onBack }) => {
       }
   };
 
+  // --- THE DEFINITIVE FIX FOR STUCK FRAME AFTER SEEK ---
+  useEffect(() => {
+    const videoEl = fileVideoRef.current;
+    // We only perform this logic if we are actively sharing a file via WebRTC
+    if (isSharing && selectedSourceId === 'file' && videoEl && streamRef.current) {
+        const handleNewData = () => {
+            // @ts-ignore - captureStream is valid on Electron/Chrome
+            const newStream = videoEl.captureStream();
+            const newVideoTrack = newStream.getVideoTracks()[0];
+            const oldVideoTrack = streamRef.current.getVideoTracks()[0];
+
+            // Ensure we have a new, different track to replace
+            if (newVideoTrack && oldVideoTrack && newVideoTrack.id !== oldVideoTrack.id) {
+                console.log('Swapping WebRTC video track after seek...');
+
+                // 1. Replace the track for every connected peer
+                peersRef.current.forEach(peer => {
+                    const sender = (peer as any)._pc.getSenders().find((s: RTCRtpSender) => s.track === oldVideoTrack);
+                    if (sender) {
+                        sender.replaceTrack(newVideoTrack).catch(e => console.error("Peer track replacement failed:", e));
+                    }
+                });
+                
+                // 2. Replace the track in our main streamRef for the local preview
+                streamRef.current.removeTrack(oldVideoTrack);
+                streamRef.current.addTrack(newVideoTrack);
+                
+                // 3. Stop the old track to release resources
+                oldVideoTrack.stop();
+            }
+        };
+        
+        // 'loadeddata' is the event that fires when the first frame is available for the new stream URL
+        videoEl.addEventListener('loadeddata', handleNewData, { once: true });
+
+        return () => {
+            videoEl.removeEventListener('loadeddata', handleNewData);
+        };
+    }
+  }, [fileStreamUrl, isSharing, selectedSourceId]); // This effect re-runs every time the video element is re-created
+
   const toggleFilePlay = () => {  
       if (fileVideoRef.current) {  
           if (fileVideoRef.current.paused) {  
@@ -749,7 +790,8 @@ export const HostRoom: React.FC<HostRoomProps> = ({ onBack }) => {
                 autoPlay 
                 crossOrigin="anonymous" 
                 onTimeUpdate={handleFileTimeUpdate}
-                onLoadedData={() => setIsPlayingFile(true)}
+                onPlay={() => setIsPlayingFile(true)}
+                onPause={() => setIsPlayingFile(false)}
               >  
                   {subtitleUrl && <track key={subtitleUrl} label="English" kind="subtitles" src={subtitleUrl} default />}  
               </video>
