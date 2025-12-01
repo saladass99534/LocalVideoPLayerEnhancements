@@ -1,4 +1,3 @@
-
 const { app, BrowserWindow, ipcMain, desktopCapturer, dialog } = require('electron'); 
 const path = require('path');
 const { exec } = require('child_process');
@@ -70,30 +69,18 @@ function startWebServer() {
                   }
               });
 
-          // Check video codec
-          const videoStream = metadata.streams.find(s => s.codec_type === 'video');
-          const isH264 = videoStream && videoStream.codec_name === 'h264';
-          
-          if (isH264) {
-              // REMUX: Fast copy
-              // Note: If input GOP is large, seeking might still be slow. 
-              // But for stuck frame issues, usually transcode is safer.
-              // For now, trust copy if H264, but if issues persist, we might force transcode.
-              command.videoCodec('copy');
-          } else {
-              // TRANSCODE: Convert to H.264
-              // ultrafast preset for "buttery smooth" realtime performance
-              // -g 30 forces a Keyframe every 30 frames.
-              // -sc_threshold 0 disables scene detection to strictly enforce GOP (fixes stuck frames).
-              command.videoCodec('libx264')
-                     .outputOptions([
-                         '-preset ultrafast', 
-                         '-tune zerolatency', 
-                         '-pix_fmt yuv420p', 
-                         '-g 30', 
-                         '-sc_threshold 0' 
-                     ]);
-          }
+          // FORCE TRANSCODE: Convert to H.264
+          // We removed the 'copy' logic here. Copying H.264 streams prevents accurate seeking 
+          // because the cut point rarely aligns with a Keyframe, causing the "stuck frame" issue.
+          // By forcing transcode, we ensure a fresh Keyframe is generated at the exact seek time.
+          command.videoCodec('libx264')
+                  .outputOptions([
+                      '-preset ultrafast', 
+                      '-tune zerolatency', 
+                      '-pix_fmt yuv420p', 
+                      '-g 30', 
+                      '-sc_threshold 0' 
+                  ]);
 
           // Audio: ALWAYS TRANSCODE to AAC to ensure perfect timestamp alignment with video
           // This fixes the "Stuck Frame" issue where copied audio packets desync from reset video timestamps.
@@ -130,7 +117,7 @@ function createWindow() {
     width: 1280,
     height: 720,
     fullscreen: true,
-    show: false,       
+    show: false,        
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
       nodeIntegration: false,
