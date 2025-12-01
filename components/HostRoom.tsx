@@ -38,7 +38,7 @@ const timeStrToSeconds = (timeStr: string) => {
 const parseVtt = (vttContent: string) => {
     const cues: { startTime: number, endTime: number, text: string }[] = [];
     if (!vttContent) return cues;
-    
+     
     const lines = vttContent.replace(/\r/g, '').split('\n');
     for (let i = 0; i < lines.length; i++) {
         if (lines[i].includes('-->')) {
@@ -47,7 +47,7 @@ const parseVtt = (vttContent: string) => {
 
             const startTime = timeStrToSeconds(timeParts[0]);
             const endTime = timeStrToSeconds(timeParts[1].split(' ')[0]); // Handle extra VTT attributes
-            
+             
             let textLines: string[] = [];
             let j = i + 1;
             while (j < lines.length && lines[j].trim() !== '') {
@@ -100,7 +100,7 @@ const setVideoBitrate = (sdp: string, bitrate: number): string => {
     // 2. Identify VP9 Payload Type
     let vp9PayloadType = -1;
     let h264PayloadType = -1;
-     
+      
     for (const line of sdpLines) {
         if (line.startsWith('a=rtpmap:')) {
             if (line.includes('VP9/90000')) {
@@ -118,11 +118,11 @@ const setVideoBitrate = (sdp: string, bitrate: number): string => {
         const mLineParts = sdpLines[videoMLineIndex].split(' ');
         const header = mLineParts.slice(0, 3);
         let payloads = mLineParts.slice(3);
-         
+          
         // Remove VP9 from current position and put it first
         payloads = payloads.filter(p => parseInt(p) !== vp9PayloadType);
         payloads.unshift(vp9PayloadType.toString());
-         
+          
         sdpLines[videoMLineIndex] = [...header, ...payloads].join(' ');
     }
 
@@ -130,13 +130,13 @@ const setVideoBitrate = (sdp: string, bitrate: number): string => {
     if (bitrate > 0) {
         sdpLines = sdpLines.filter(line => !line.startsWith('b=AS:'));
         sdpLines.splice(videoMLineIndex + 1, 0, `b=AS:${bitrate}`);
-         
+          
         // Apply strict google params to preferred codec
         const targetPayload = vp9PayloadType !== -1 ? vp9PayloadType : h264PayloadType;
         if (targetPayload !== -1) {
             let fmtpIndex = sdpLines.findIndex(l => l.startsWith(`a=fmtp:${targetPayload}`));
             const params = `x-google-min-bitrate=${bitrate};x-google-start-bitrate=${bitrate};x-google-max-bitrate=${bitrate}`;
-             
+              
             if (fmtpIndex !== -1) {
                 if (!sdpLines[fmtpIndex].includes('x-google-min-bitrate')) {
                     sdpLines[fmtpIndex] += `; ${params}`;
@@ -193,7 +193,7 @@ export const HostRoom: React.FC<HostRoomProps> = ({ onBack }) => {
     
   const [fileStreamUrl, setFileStreamUrl] = useState<string | null>(null); 
   const [fileRawPath, setFileRawPath] = useState<string | null>(null);
-  const fileVideoRef = useRef<HTMLVideoElement>(null);    
+  const fileVideoRef = useRef<HTMLVideoElement>(null);     
   const audioContextRef = useRef<AudioContext | null>(null); 
   const audioSourceNodeRef = useRef<MediaElementAudioSourceNode | null>(null); 
 
@@ -207,7 +207,7 @@ export const HostRoom: React.FC<HostRoomProps> = ({ onBack }) => {
   const [isPlayingFile, setIsPlayingFile] = useState(false); 
   const [showCCMenu, setShowCCMenu] = useState(false); 
   const [ccSize, setCcSize] = useState<'small' | 'medium' | 'large'>('medium'); 
-  
+   
   // --- SUBTITLE STATE (REFACTORED) ---
   const [parsedCues, setParsedCues] = useState<{ startTime: number, endTime: number, text: string }[]>([]);
   const [currentSubtitleText, setCurrentSubtitleText] = useState(''); 
@@ -343,7 +343,7 @@ export const HostRoom: React.FC<HostRoomProps> = ({ onBack }) => {
   useEffect(() => {  
       const handleGlobalKeyDown = (e: KeyboardEvent) => {  
           resetInputIdleTimer();  
-          
+           
           if ((isTheaterMode || isFullscreen) && !isInputFocused) {
               if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
                   setShowControls(true);
@@ -351,7 +351,7 @@ export const HostRoom: React.FC<HostRoomProps> = ({ onBack }) => {
               }
           }
       };  
-      
+       
       window.addEventListener('keydown', handleGlobalKeyDown);  
       return () => window.removeEventListener('keydown', handleGlobalKeyDown);  
   }, [isTheaterMode, isFullscreen, isInputFocused]);  
@@ -624,7 +624,7 @@ export const HostRoom: React.FC<HostRoomProps> = ({ onBack }) => {
                 sendDataToPeer(p, { type: 'theme_change', payload: currentTheme });  
                 if(streamRef.current) sendDataToPeer(p, { type: 'bitrate_sync', payload: streamBitrateRef.current });  
                 sendDataToPeer(p, { type: 'cc_size', payload: ccSize });  
-                 
+                  
                 if (isSharing && movieTitle) { 
                     sendDataToPeer(p, { type: 'metadata', payload: { title: movieTitle } }); 
                 } 
@@ -654,11 +654,23 @@ export const HostRoom: React.FC<HostRoomProps> = ({ onBack }) => {
       setShowSourceSelector(false);  
       try {  
           let finalStream: MediaStream;  
-          let maxWidth = streamQuality === '4k' ? 3840 : (streamQuality === '1440p' ? 2560 : 1920);  
-          let maxHeight = streamQuality === '4k' ? 2160 : (streamQuality === '1440p' ? 1440 : 1080);  
+          
+          // --- FIX APPLIED HERE: SQUARE BOUNDING BOX ---
+          // Creates a square bounding box (e.g., 1920x1920).
+          // This allows 16:9, 16:10, 4:3, AND 9:16 (Portrait) to pass through without cropping.
+          const boxSize = streamQuality === '4k' ? 3840 : (streamQuality === '1440p' ? 2560 : 1920);
 
           const videoConstraints = {  
-              mandatory: { chromeMediaSource: 'desktop', chromeMediaSourceId: sourceId, maxWidth, maxHeight, minFrameRate: streamFps, maxFrameRate: streamFps, googPowerSaving: false, googCpuOveruseDetection: false }  
+              mandatory: { 
+                  chromeMediaSource: 'desktop', 
+                  chromeMediaSourceId: sourceId, 
+                  maxWidth: boxSize, 
+                  maxHeight: boxSize, // Key change: height = width 
+                  minFrameRate: streamFps, 
+                  maxFrameRate: streamFps, 
+                  googPowerSaving: false, 
+                  googCpuOveruseDetection: false 
+              }  
           };  
 
           if (sourceId === 'file') {  
@@ -754,17 +766,17 @@ export const HostRoom: React.FC<HostRoomProps> = ({ onBack }) => {
       if (fileVideoRef.current) {  
           fileVideoRef.current.pause();  
           fileVideoRef.current.src = "";   
-          fileVideoRef.current.load();      
+          fileVideoRef.current.load();       
           setIsPlayingFile(false);  
       }  
       setFileStreamUrl(null); 
       setFileRawPath(null);
       setSelectedSourceId(null);  
-      setSourceTab('screen');   
+      setSourceTab('screen');    
       setParsedCues([]);
       setCurrentSubtitleText('');  
       broadcast({ type: 'subtitle_update', payload: '' });  
-      setMovieTitle("");   
+      setMovieTitle("");    
       setIsSharing(false);  
       lastStatsRef.current = null;  
       setStreamOffset(0);
