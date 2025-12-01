@@ -13,6 +13,12 @@ const ffprobePath = require('ffprobe-static').path.replace('app.asar', 'app.asar
 ffmpeg.setFfmpegPath(ffmpegPath);
 ffmpeg.setFfprobePath(ffprobePath);
 
+// --- CRITICAL FIX: DISABLE GPU ACCELERATION ---
+// This prevents the "Frozen Video / Playing Audio" bug caused by 
+// the GPU decoder getting confused when stream timestamps reset.
+app.disableHardwareAcceleration();
+// ----------------------------------------------
+
 let mainWindow;
 let wss; 
 let guestWs; 
@@ -51,9 +57,10 @@ function startWebServer() {
 
           res.contentType('video/mp4');
 
-          // USE INPUT OPTIONS FOR ACCURATE SEEKING
+          // USE INPUT SEEKING (-ss before -i)
+          // This is faster and prevents "decoding from start" lag
           const command = ffmpeg(filePath)
-              .inputOptions([`-ss ${startTime}`]) // Input seeking is faster and safer for transcoding
+              .inputOptions([`-ss ${startTime}`]) 
               .format('mp4')
               .outputOptions([
                   '-movflags +frag_keyframe+empty_moov+default_base_moof', 
@@ -65,31 +72,33 @@ function startWebServer() {
                   }
               });
 
-          // ROBUST TRANSCODE SETTINGS
+          // FORCE TRANSCODE
+          // Using 'ultrafast' and 'baseline' profile for maximum seeking stability
           command.videoCodec('libx264')
                   .outputOptions([
                       '-preset ultrafast', 
                       '-tune zerolatency', 
                       '-pix_fmt yuv420p', 
-                      '-profile:v baseline', // No B-frames
+                      '-profile:v baseline', // No B-frames (Critical)
                       '-g 60',               // Keyframe every 2s
                       '-sc_threshold 0',     // Strict GOP
-                      '-maxrate 4000k',      // Prevent massive bitrate spikes
+                      '-maxrate 4000k',      // Cap bitrate to prevent browser buffer choke
                       '-bufsize 8000k'
                   ])
-                  // SAFE SCALE FILTER: Ensures width/height are divisible by 2 (Critical for Web Players)
+                  // Ensure even dimensions (odd pixels crash some decoders)
                   .videoFilters('scale=trunc(iw/2)*2:trunc(ih/2)*2');
 
-          // AUDIO: FORCE STEREO & RESAMPLE
-          // 5.1/7.1 Audio often causes browser buffer desync. Downmix to Stereo.
+          // AUDIO: Force Stereo AAC
+          // Surround sound (5.1) often desyncs in browsers during seek
           command.audioCodec('aac')
-                 .audioChannels(2)       // Force Stereo
+                 .audioChannels(2)       
                  .audioFrequency(44100)
                  .audioBitrate('128k')
                  .audioFilter('aresample=async=1');
 
           command.pipe(res, { end: true });
 
+          // Cleanup FFmpeg process if browser cancels request
           req.on('close', () => {
               try { command.kill(); } catch(e) {}
           });
