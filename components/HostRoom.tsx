@@ -375,19 +375,22 @@ export const HostRoom: React.FC<HostRoomProps> = ({ onBack }) => {
               
               // Hard Reset: Force browser to clear buffer to prevent "stuck frame"
               fileVideoRef.current.pause();
-              fileVideoRef.current.src = "";
+              
+              // Aggressive clear: remove src attribute first
+              fileVideoRef.current.removeAttribute('src');
               fileVideoRef.current.load();
 
               const newUrl = `http://127.0.0.1:8080/stream?file=${encodeURIComponent(fileRawPath)}&startTime=${time}&_t=${Date.now()}`;
               
-              // Small timeout to allow buffer flush to register
+              // Longer timeout to allow browser to flush decoding pipeline
               setTimeout(() => {
                   if (fileVideoRef.current) {
                       fileVideoRef.current.src = newUrl;
+                      fileVideoRef.current.load(); // Load explicitly
                       fileVideoRef.current.play().catch(console.error);
                       setIsPlayingFile(true);
                   }
-              }, 50);
+              }, 200); // 200ms delay for robustness
           }
       } else {
           // Local native file playback (file://)
