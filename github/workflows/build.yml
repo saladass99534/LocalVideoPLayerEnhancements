@@ -1,0 +1,50 @@
+name: Build SheiyuWatch
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            build_args: --mac
+            artifact_ext: dmg
+            artifact_name: Mac-DMG
+          - os: windows-latest
+            build_args: --win
+            artifact_ext: exe
+            artifact_name: Windows-EXE
+
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: 20
+        cache: 'npm'
+
+    - name: Install Dependencies
+      run: npm install
+
+    - name: Build App
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # This command dynamically uses the arguments defined in the matrix above
+      run: npm run electron:build -- ${{ matrix.build_args }}
+
+    - name: Upload Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: SheiyuWatch-${{ matrix.artifact_name }}
+        # Uploads either .dmg or .exe based on the current matrix run
+        path: dist-electron/*.${{ matrix.artifact_ext }}
+        if-no-files-found: error

@@ -1,0 +1,8 @@
+{
+  "name": "VanillaLocal",
+  "description": "High-quality P2P screen sharing and watch party app designed for Tailscale networks.",
+  "requestFramePermissions": [
+    "microphone",
+    "camera"
+  ]
+}
