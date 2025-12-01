@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useRef } from 'react'; 
 import SimplePeer from 'simple-peer'; 
 import {  
@@ -245,10 +246,6 @@ export const HostRoom: React.FC<HostRoomProps> = ({ onBack }) => {
   useEffect(() => {
     subtitleRef.current = currentSubtitleText;
   }, [currentSubtitleText]);
-
-  const electronAvailable = typeof window !== 'undefined' && window.electron !== undefined; 
-  const isMac = typeof navigator !== 'undefined' && navigator.platform.toUpperCase().indexOf('MAC') >= 0; 
-  const activeTheme = THEMES[currentTheme] || THEMES['default']; 
 
   useEffect(() => {  
       broadcast({ type: 'cc_size', payload: ccSize });  
@@ -813,7 +810,7 @@ export const HostRoom: React.FC<HostRoomProps> = ({ onBack }) => {
                 key={fileStreamUrl} // CRITICAL: Forces re-mount on seek
                 ref={fileVideoRef} 
                 src={fileStreamUrl} 
-                className="absolute top-0 left-0 w-full h-full -z-50 opacity-100 pointer-events-none" 
+                className="absolute top-0 left-0 w-full h-full object-contain -z-50 opacity-100 pointer-events-none" 
                 style={{ visibility: 'visible' }} 
                 playsInline 
                 autoPlay 
@@ -1072,7 +1069,7 @@ export const HostRoom: React.FC<HostRoomProps> = ({ onBack }) => {
       <div className={`bg-black/40 backdrop-blur-xl flex flex-col md:flex-none min-h-0 min-w-0 transition-all duration-500 ease-in-out rounded-l-3xl border-l shadow-2xl overflow-hidden ${isTheaterMode || isFullscreen ? 'w-0 max-w-0 opacity-0 border-0 pointer-events-none' : 'w-80 opacity-100'} ${activeTheme.border} ${activeTheme.glow}`}>  
           <div className={`min-w-[320px] h-full flex flex-col transition-transform duration-500 ease-in-out ${isTheaterMode || isFullscreen ? 'translate-x-full' : 'translate-x-0'}`}>  
             <div className="flex p-2 gap-2"><button onClick={() => setActiveTab('chat')} className={`flex-1 py-2 text-xs font-bold rounded-full transition-all ${activeTab === 'chat' ? `bg-white/10 text-white` : 'text-gray-400 hover:text-white hover:bg-white/5'}`}>CHAT</button><button onClick={() => setActiveTab('members')} className={`flex-1 py-2 text-xs font-bold rounded-full transition-all ${activeTab === 'members' ? `bg-white/10 text-white` : 'text-gray-400 hover:text-white hover:bg-white/5'}`}>MEMBERS</button></div>  
-            <div className="flex-1 relative overflow-hidden flex flex-col">{activeTab === 'chat' && <div className="absolute inset-0 flex flex-col"><Chat messages={messages} onSendMessage={handleSendMessage} onAddReaction={() => {}} onHypeEmoji={handleHypeAction} onPickerAction={handlePickerInteraction} myId={'HOST'} theme={activeTheme} onInputFocus={() => setIsInputFocused(true)} onInputBlur={() => setIsInputFocused(false)} onInputChange={resetInputIdleTimer} /></div>}{activeTab === 'members' && (<div className="p-4 space-y-2 overflow-y-auto">{members.map(m => (<div key={m.id} className="flex items-center justify-between p-3 bg-white/5 rounded-xl border border-white/5 hover:bg-white/10 transition-colors"><div className="flex items-center gap-3"><div className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold ${m.isHost ? `bg-gradient-to-br from-yellow-400 to-orange-500 text-black` : 'bg-white/10 text-white'}`}>{m.name[0]}</div><span className="text-sm font-medium text-gray-200">{m.name}</span></div>{m.isHost && <Crown size={14} className="text-yellow-500 drop-shadow-md" />}</div>))}</div>)}</div>  
+            <div className="flex-1 relative overflow-hidden flex flex-col">{activeTab === 'chat' && <div className="absolute inset-0 flex flex-col"><Chat messages={messages} onSendMessage={handleSendMessage} onAddReaction={() => {}} onHypeEmoji={handleHypeAction} onPickerAction={handlePickerInteraction} myId={'HOST'} theme={activeTheme} onInputFocus={() => setIsInputFocused(true)} onInputBlur={() => setIsInputFocused(false)} onInputChange={resetInputIdleTimer} /></div>}{activeTab === 'members' && (<div className="p-4 space-y-2 overflow-y-auto">{members.map(m => (<div key={m.id} className="flex items-center justify-between p-3 bg-white/5 rounded-xl border border-white/5 hover:bg-white/10 transition-colors"><div className="flex items-center gap-3"><div className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold ${m.isHost ? `bg-gradient-to-br from-yellow-400 to-orange-500 text-black` : 'bg-white/10 text-white'}`}>{m.name.charAt(0)}</div><span className="text-sm font-medium text-gray-200">{m.name}</span></div>{m.isHost && <Crown size={14} className="text-yellow-500 drop-shadow-md" />}</div>))}</div>)}</div>  
           </div>  
       </div>  
     </div>  
