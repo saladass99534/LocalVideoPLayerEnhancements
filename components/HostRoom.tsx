@@ -39,6 +39,7 @@ const THEMES: Record<string, { primary: string, glow: string, border: string, bg
   Thriller: { primary: 'text-emerald-400', glow: 'shadow-emerald-500/50', border: 'border-emerald-500/30', bg: 'bg-emerald-500', accent: 'accent-emerald-500' }, 
 }; 
 
+// --- STRICT VP9 PRIORITIZATION LOGIC ---
 const setVideoBitrate = (sdp: string, bitrate: number): string => {
     let sdpLines = sdp.split('\r\n');
     let videoMLineIndex = -1;
@@ -175,6 +176,10 @@ export const HostRoom: React.FC<HostRoomProps> = ({ onBack }) => {
   const [floatingEmojis, setFloatingEmojis] = useState<FloatingEmoji[]>([]); 
   const [messages, setMessages] = useState<ChatMessage[]>([]); 
   const [members, setMembers] = useState<Member[]>([]); 
+
+  // --- NEW SEEKING STATE ---
+  const [isSeeking, setIsSeeking] = useState(false);
+  const [seekValue, setSeekValue] = useState(0);
 
   const peersRef = useRef<Map<string, SimplePeer.Instance>>(new Map()); 
   const videoRef = useRef<HTMLVideoElement>(null); 
@@ -314,11 +319,17 @@ export const HostRoom: React.FC<HostRoomProps> = ({ onBack }) => {
   };  
 
   const handleFileTimeUpdate = () => {  
+      if (isSeeking) return; // Do not update time while dragging!
+
       if (fileVideoRef.current) { 
           if (fileStreamUrl && fileStreamUrl.startsWith('http')) {
-              setCurrentTime(streamOffset + fileVideoRef.current.currentTime); 
+              const actualTime = streamOffset + fileVideoRef.current.currentTime;
+              setCurrentTime(actualTime); 
+              setSeekValue(actualTime);
           } else {
-              setCurrentTime(fileVideoRef.current.currentTime);
+              const actualTime = fileVideoRef.current.currentTime;
+              setCurrentTime(actualTime);
+              setSeekValue(actualTime);
               if (!duration && isFinite(fileVideoRef.current.duration)) {
                   setDuration(fileVideoRef.current.duration);
               }
@@ -327,23 +338,38 @@ export const HostRoom: React.FC<HostRoomProps> = ({ onBack }) => {
       } 
   };  
 
-  const handleFileSeek = (e: React.ChangeEvent<HTMLInputElement>) => {  
-      const time = parseFloat(e.target.value);  
-      setCurrentTime(time);  
-      
+  // --- NEW: DRAG START ---
+  const handleSeekStart = () => {
+      setIsSeeking(true);
+  };
+
+  // --- NEW: DRAG MOVE (Visual Update Only) ---
+  const handleSeekChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+      setSeekValue(parseFloat(e.target.value));
+  };
+
+  // --- NEW: DRAG END (Actual Seek Trigger) ---
+  const handleSeekEnd = () => {
+      setIsSeeking(false);
+      const time = seekValue;
+      setCurrentTime(time);
+
       if (fileStreamUrl && fileStreamUrl.startsWith('http')) {
           if (fileRawPath) {
               setStreamOffset(time);
-              setRemountKey(prev => prev + 1); 
+              setRemountKey(prev => prev + 1); // Force Remount
               
               const newUrl = `http://127.0.0.1:8080/stream?file=${encodeURIComponent(fileRawPath)}&startTime=${time}&_t=${Date.now()}`;
               setFileStreamUrl(newUrl);
               setIsPlayingFile(true);
           }
       } else {
-          if (fileVideoRef.current) fileVideoRef.current.currentTime = time;  
+          // Native
+          if (fileVideoRef.current) {
+              fileVideoRef.current.currentTime = time;
+          }
       }
-  };  
+  };
 
   const toggleFilePlay = () => {  
       if (fileVideoRef.current) {  
@@ -619,8 +645,9 @@ export const HostRoom: React.FC<HostRoomProps> = ({ onBack }) => {
         <div ref={containerRef} className="flex-1 relative bg-black flex items-center justify-center overflow-hidden group select-none"  
             onMouseMove={handleMouseMove} onClick={() => setShowControls(!showControls)} onMouseEnter={clearControlsTimeout} onMouseLeave={resetControlsTimeout}>  
               
+            {/* FORCE REMOUNT on seek using remountKey */}
             <video 
-                key={remountKey} // NUCLEAR REMOUNT
+                key={remountKey} 
                 ref={fileVideoRef} 
                 src={fileStreamUrl || ''} 
                 className="absolute top-0 left-0 w-full h-full -z-50 opacity-100 pointer-events-none" 
@@ -840,12 +867,25 @@ export const HostRoom: React.FC<HostRoomProps> = ({ onBack }) => {
                           </div>
                         )}  
                         
+                        {/* --- REPLACED SEEKBAR LOGIC --- */}
                         {isSharing && audioSource === 'file' && (
                             <>
                                 <div className="w-px h-6 bg-white/10 mx-2"></div>
                                 <div className="flex items-center gap-2 min-w-[200px]">
-                                    <span className="text-[10px] font-mono text-gray-300 w-10 text-right">{formatTime(currentTime)}</span>
-                                    <input type="range" min={0} max={duration || 100} value={currentTime} onChange={handleFileSeek} className={`w-40 h-1 rounded-lg appearance-none cursor-pointer bg-white/20 ${activeTheme.accent}`} />
+                                    <span className="text-[10px] font-mono text-gray-300 w-10 text-right">{formatTime(seekValue)}</span>
+                                    <input 
+                                        type="range" 
+                                        min={0} 
+                                        max={duration || 100} 
+                                        step="0.1"
+                                        value={seekValue} 
+                                        onMouseDown={handleSeekStart}
+                                        onTouchStart={handleSeekStart}
+                                        onChange={handleSeekChange}
+                                        onMouseUp={handleSeekEnd}
+                                        onTouchEnd={handleSeekEnd}
+                                        className={`w-40 h-1 rounded-lg appearance-none cursor-pointer bg-white/20 ${activeTheme.accent}`} 
+                                    />
                                     <span className="text-[10px] font-mono text-gray-300 w-10">{formatTime(duration)}</span>
                                 </div>
                             </>
