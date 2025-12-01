@@ -56,8 +56,7 @@ function startWebServer() {
           // Base command
           const command = ffmpeg(filePath)
               .inputOptions([
-                  '-re', // Read input at native frame rate (important for live streaming feel)
-                  `-ss ${startTime}` // Seek before input to be fast
+                  `-ss ${startTime}` // Seek before input to be fast. REMOVED -re to allow faststart to work.
               ])
               .format('mp4')
               .outputOptions([
@@ -67,7 +66,8 @@ function startWebServer() {
                   '-tune zerolatency',
                   '-max_muxing_queue_size 9999', // Prevent buffer overflows
                   '-analyzeduration 100M', // Fast analysis
-                  '-probesize 100M'
+                  '-probesize 100M',
+                  '-bufsize 30M' // Add a 30Mbit buffer to smooth out high-bitrate streams for web viewers
               ])
               .on('error', (err) => {
                   if (!err.message.includes('Output stream closed')) {
