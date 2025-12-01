@@ -38,7 +38,7 @@ function startWebServer() {
   // --- VIDEO STREAMING ENDPOINT ---
   expressApp.get('/stream', (req, res) => {
       const filePath = req.query.file;
-      const startTime = req.query.startTime || 0; // Start time in seconds
+      const startTime = req.query.startTime || 0; 
 
       if (!filePath || !fs.existsSync(filePath)) {
           return res.status(404).send('File not found');
@@ -51,45 +51,51 @@ function startWebServer() {
               return res.status(500).send('Error analyzing file');
           }
 
-          // Smart Transcode Logic
           res.contentType('video/mp4');
 
           const command = ffmpeg(filePath)
-              .seekInput(startTime) // SEEK: Jump to timestamp before processing
+              .seekInput(startTime) 
               .format('mp4')
               .outputOptions([
-                  '-movflags +frag_keyframe+empty_moov+default_base_moof', // Fragmented MP4 for streaming
-                  '-reset_timestamps 1', // Reset timestamps so player thinks it starts at 0
-                  '-avoid_negative_ts make_zero', // Critical for seeking stability
-                  // REMOVED: '-frag_duration' to avoid orphan frames
+                  '-movflags +frag_keyframe+empty_moov+default_base_moof', 
+                  '-reset_timestamps 1', 
+                  '-avoid_negative_ts make_zero', 
               ])
               .on('error', (err) => {
-                  if (!err.message.includes('Output stream closed')) {
+                  // Silence the 'Output stream closed' error which happens when seeking
+                  if (err.message && !err.message.includes('Output stream closed')) {
                       console.error('FFmpeg Error:', err);
                   }
               });
 
-          // FORCE TRANSCODE: 
-          // 1. baseline profile disables B-frames (critical for seeking)
-          // 2. -g 30 creates consistent keyframes
+          // FORCE TRANSCODE
+          // -r 30: Force constant 30fps to prevent timestamp gaps
+          // -g 60: Keyframe every 2 seconds (good balance)
+          // -profile:v baseline: Disables B-frames (Critical for preventing stuck frames)
           command.videoCodec('libx264')
                   .outputOptions([
                       '-preset ultrafast', 
                       '-tune zerolatency', 
                       '-pix_fmt yuv420p', 
                       '-profile:v baseline', 
-                      '-g 30', 
+                      '-r 30',
+                      '-g 60', 
                       '-sc_threshold 0' 
                   ]);
 
-          // Audio: Transcode to AAC + Async Resample
-          // 'aresample=async=1' fixes timestamp drift between audio/video
+          // Audio: Force AAC, 44.1kHz, and async resampling to sync with video
           command.audioCodec('aac')
                  .audioBitrate('128k')
+                 .audioFrequency(44100)
                  .audioFilter('aresample=async=1');
 
           // Pipe directly to response
           command.pipe(res, { end: true });
+
+          // CLEANUP: Kill ffmpeg if the browser cancels (e.g. user seeks again)
+          req.on('close', () => {
+              try { command.kill(); } catch(e) {}
+          });
       });
   });
 
@@ -125,7 +131,7 @@ function createWindow() {
       nodeIntegration: false,
       contextIsolation: true,
       sandbox: false, 
-      webSecurity: false // Disable webSecurity to allow capturing localhost video stream
+      webSecurity: false 
     },
     autoHideMenuBar: true,
     backgroundColor: '#000000',
@@ -145,13 +151,12 @@ function createWindow() {
   }
 }
 
-// ENABLE MACOS SYSTEM AUDIO LOOPBACK
 if (process.platform === 'darwin') {
     app.commandLine.appendSwitch('enable-features', 'MacLoopbackAudioForScreenShare,MacSckSystemAudioLoopbackOverride');
 }
 
 app.whenReady().then(() => {
-  startWebServer(); // Always start server for local streaming
+  startWebServer(); 
   createWindow();
 
   app.on('activate', function () {
@@ -165,9 +170,7 @@ app.on('window-all-closed', function () {
 
 // --- IPC Handlers ---
 
-ipcMain.on('toggle-web-server', (event, enable) => {
-    // Server is now always on for host streaming capabilities
-});
+ipcMain.on('toggle-web-server', (event, enable) => { });
 
 ipcMain.on('set-window-opacity', (event, opacity) => {
     if (mainWindow && !mainWindow.isDestroyed()) {
@@ -177,7 +180,6 @@ ipcMain.on('set-window-opacity', (event, opacity) => {
 
 // --- FILE PICKER HANDLERS ---
 
-// Video File Picker
 ipcMain.handle('open-video-file', async () => {
   const { canceled, filePaths } = await dialog.showOpenDialog({
     properties: ['openFile'],
@@ -190,7 +192,6 @@ ipcMain.handle('open-video-file', async () => {
   }
 });
 
-// Get Video Duration via FFprobe
 ipcMain.handle('get-video-duration', async (event, filePath) => {
     return new Promise((resolve, reject) => {
         ffmpeg.ffprobe(filePath, (err, metadata) => {
@@ -204,7 +205,6 @@ ipcMain.handle('get-video-duration', async (event, filePath) => {
     });
 });
 
-// Subtitle File Picker
 ipcMain.handle('open-subtitle-file', async () => {
   const { canceled, filePaths } = await dialog.showOpenDialog({
     properties: ['openFile'],
