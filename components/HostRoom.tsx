@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useRef } from 'react'; 
 import SimplePeer from 'simple-peer'; 
 import {  
@@ -44,6 +45,7 @@ const setVideoBitrate = (sdp: string, bitrate: number): string => {
     let sdpLines = sdp.split('\r\n');
     let videoMLineIndex = -1;
 
+    // 1. Find m=video line
     for (let i = 0; i < sdpLines.length; i++) {
         if (sdpLines[i].startsWith('m=video')) {
             videoMLineIndex = i;
@@ -53,9 +55,10 @@ const setVideoBitrate = (sdp: string, bitrate: number): string => {
 
     if (videoMLineIndex === -1) return sdp;
 
+    // 2. Identify VP9 Payload Type
     let vp9PayloadType = -1;
     let h264PayloadType = -1;
-      
+     
     for (const line of sdpLines) {
         if (line.startsWith('a=rtpmap:')) {
             if (line.includes('VP9/90000')) {
@@ -68,22 +71,30 @@ const setVideoBitrate = (sdp: string, bitrate: number): string => {
         }
     }
 
+    // 3. Force VP9 Priority (Reorder m=video line)
     if (vp9PayloadType !== -1) {
         const mLineParts = sdpLines[videoMLineIndex].split(' ');
         const header = mLineParts.slice(0, 3);
         let payloads = mLineParts.slice(3);
+         
+        // Remove VP9 from current position and put it first
         payloads = payloads.filter(p => parseInt(p) !== vp9PayloadType);
         payloads.unshift(vp9PayloadType.toString());
+         
         sdpLines[videoMLineIndex] = [...header, ...payloads].join(' ');
     }
 
+    // 4. Apply Bitrate Limit
     if (bitrate > 0) {
         sdpLines = sdpLines.filter(line => !line.startsWith('b=AS:'));
         sdpLines.splice(videoMLineIndex + 1, 0, `b=AS:${bitrate}`);
+         
+        // Apply strict google params to preferred codec
         const targetPayload = vp9PayloadType !== -1 ? vp9PayloadType : h264PayloadType;
         if (targetPayload !== -1) {
             let fmtpIndex = sdpLines.findIndex(l => l.startsWith(`a=fmtp:${targetPayload}`));
             const params = `x-google-min-bitrate=${bitrate};x-google-start-bitrate=${bitrate};x-google-max-bitrate=${bitrate}`;
+             
             if (fmtpIndex !== -1) {
                 if (!sdpLines[fmtpIndex].includes('x-google-min-bitrate')) {
                     sdpLines[fmtpIndex] += `; ${params}`;
@@ -148,8 +159,9 @@ export const HostRoom: React.FC<HostRoomProps> = ({ onBack }) => {
 
   const [duration, setDuration] = useState(0); 
   const [currentTime, setCurrentTime] = useState(0); 
+  // Virtual Time Offset: The time at which the current FFmpeg stream starts
   const [streamOffset, setStreamOffset] = useState(0);
-  const [remountKey, setRemountKey] = useState(0); 
+  const [isSeekDragging, setIsSeekDragging] = useState(false);
 
   const [isPlayingFile, setIsPlayingFile] = useState(false); 
   const [showCCMenu, setShowCCMenu] = useState(false); 
@@ -177,10 +189,6 @@ export const HostRoom: React.FC<HostRoomProps> = ({ onBack }) => {
   const [messages, setMessages] = useState<ChatMessage[]>([]); 
   const [members, setMembers] = useState<Member[]>([]); 
 
-  // --- NEW SEEKING STATE ---
-  const [isSeeking, setIsSeeking] = useState(false);
-  const [seekValue, setSeekValue] = useState(0);
-
   const peersRef = useRef<Map<string, SimplePeer.Instance>>(new Map()); 
   const videoRef = useRef<HTMLVideoElement>(null); 
   const ambilightRef = useRef<HTMLVideoElement>(null); 
@@ -202,6 +210,7 @@ export const HostRoom: React.FC<HostRoomProps> = ({ onBack }) => {
   useEffect(() => { 
     const video = fileVideoRef.current; 
     if (!video || !subtitleUrl) return; 
+
     const timer = setTimeout(() => { 
         if (video.textTracks && video.textTracks.length > 0) { 
             for (let i = 0; i < video.textTracks.length; i++) { 
@@ -279,17 +288,33 @@ export const HostRoom: React.FC<HostRoomProps> = ({ onBack }) => {
     return () => { document.removeEventListener('fullscreenchange', handleFsChange); performCleanup(); };  
   }, []);  
 
-  const clearControlsTimeout = () => { if (controlsTimeoutRef.current) clearTimeout(controlsTimeoutRef.current); };
-  const resetControlsTimeout = () => { clearControlsTimeout(); controlsTimeoutRef.current = setTimeout(() => setShowControls(false), 2500); };
+  // Anti-flicker logic for fullscreen controls
+  const clearControlsTimeout = () => {
+      if (controlsTimeoutRef.current) {
+          clearTimeout(controlsTimeoutRef.current);
+      }
+  };
+  const resetControlsTimeout = () => {
+      clearControlsTimeout();
+      controlsTimeoutRef.current = setTimeout(() => setShowControls(false), 2500);
+  };
 
   const resetInputIdleTimer = () => {  
       setIsInputIdle(false);  
       if (inputIdleTimeoutRef.current) clearTimeout(inputIdleTimeoutRef.current);  
-      if (isInputFocused) { inputIdleTimeoutRef.current = setTimeout(() => { setIsInputIdle(true); }, 4000); }
+      if (isInputFocused) {
+        inputIdleTimeoutRef.current = setTimeout(() => {
+            setIsInputIdle(true);
+        }, 4000);
+      }
   };  
   useEffect(() => { resetInputIdleTimer(); }, [isInputFocused]);  
 
-  const handleMouseMove = () => { setShowControls(true); resetInputIdleTimer(); resetControlsTimeout(); };
+  const handleMouseMove = () => {
+      setShowControls(true);
+      resetInputIdleTimer();
+      resetControlsTimeout();
+  };
 
   useEffect(() => {  
     const handleKeyDown = (e: KeyboardEvent) => { if (e.key === 'Escape' && isTheaterMode) setIsTheaterMode(false); };  
@@ -297,9 +322,11 @@ export const HostRoom: React.FC<HostRoomProps> = ({ onBack }) => {
     return () => window.removeEventListener('keydown', handleKeyDown);  
   }, [isTheaterMode]);  
 
+  // Auto-wake chat (Identical to ViewerRoom)
   useEffect(() => {  
       const handleGlobalKeyDown = (e: KeyboardEvent) => {  
           resetInputIdleTimer();  
+          
           if ((isTheaterMode || isFullscreen) && !isInputFocused) {
               if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
                   setShowControls(true);
@@ -307,6 +334,7 @@ export const HostRoom: React.FC<HostRoomProps> = ({ onBack }) => {
               }
           }
       };  
+      
       window.addEventListener('keydown', handleGlobalKeyDown);  
       return () => window.removeEventListener('keydown', handleGlobalKeyDown);  
   }, [isTheaterMode, isFullscreen, isInputFocused]);  
@@ -319,17 +347,17 @@ export const HostRoom: React.FC<HostRoomProps> = ({ onBack }) => {
   };  
 
   const handleFileTimeUpdate = () => {  
-      if (isSeeking) return; // Do not update time while dragging!
+      // Only update time if user is NOT dragging the slider
+      if (isSeekDragging) return;
 
       if (fileVideoRef.current) { 
+          // If we are in HTTP streaming mode, we must add the stream offset
           if (fileStreamUrl && fileStreamUrl.startsWith('http')) {
-              const actualTime = streamOffset + fileVideoRef.current.currentTime;
-              setCurrentTime(actualTime); 
-              setSeekValue(actualTime);
+              setCurrentTime(streamOffset + fileVideoRef.current.currentTime); 
           } else {
-              const actualTime = fileVideoRef.current.currentTime;
-              setCurrentTime(actualTime);
-              setSeekValue(actualTime);
+              // Native file:// playback
+              setCurrentTime(fileVideoRef.current.currentTime);
+              // Only rely on metadata for duration in native mode
               if (!duration && isFinite(fileVideoRef.current.duration)) {
                   setDuration(fileVideoRef.current.duration);
               }
@@ -338,36 +366,29 @@ export const HostRoom: React.FC<HostRoomProps> = ({ onBack }) => {
       } 
   };  
 
-  // --- NEW: DRAG START ---
-  const handleSeekStart = () => {
-      setIsSeeking(true);
-  };
+  // --- VISUAL ONLY: Handles dragging the slider ---
+  const handleFileSeekChange = (e: React.ChangeEvent<HTMLInputElement>) => {  
+      const time = parseFloat(e.target.value);  
+      setCurrentTime(time);  
+      setIsSeekDragging(true);
+  };  
 
-  // --- NEW: DRAG MOVE (Visual Update Only) ---
-  const handleSeekChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-      setSeekValue(parseFloat(e.target.value));
-  };
-
-  // --- NEW: DRAG END (Actual Seek Trigger) ---
-  const handleSeekEnd = () => {
-      setIsSeeking(false);
-      const time = seekValue;
-      setCurrentTime(time);
-
+  // --- COMMIT: Fires only on MouseUp/TouchEnd ---
+  const handleSeekCommit = (e: React.MouseEvent<HTMLInputElement> | React.TouchEvent<HTMLInputElement>) => {
+      setIsSeekDragging(false);
+      const time = parseFloat(e.currentTarget.value);
+      
+      // Smart Seeking for Streaming
       if (fileStreamUrl && fileStreamUrl.startsWith('http')) {
           if (fileRawPath) {
               setStreamOffset(time);
-              setRemountKey(prev => prev + 1); // Force Remount
-              
+              // Changing the key forces a complete remount of the video element
               const newUrl = `http://127.0.0.1:8080/stream?file=${encodeURIComponent(fileRawPath)}&startTime=${time}&_t=${Date.now()}`;
               setFileStreamUrl(newUrl);
-              setIsPlayingFile(true);
           }
       } else {
-          // Native
-          if (fileVideoRef.current) {
-              fileVideoRef.current.currentTime = time;
-          }
+          // Local native file playback (file://)
+          if (fileVideoRef.current) fileVideoRef.current.currentTime = time;  
       }
   };
 
@@ -385,27 +406,42 @@ export const HostRoom: React.FC<HostRoomProps> = ({ onBack }) => {
 
   const loadSubtitle = async () => {  
       if (!electronAvailable) return;  
+        
       const result = await window.electron.openSubtitleFile();  
+        
       if (result && result.content) {  
           try {  
               let text = result.content;  
-              if (result.path.endsWith('.srt')) { text = srtToVtt(text); }  
+              if (result.path.endsWith('.srt')) {  
+                  text = srtToVtt(text);  
+              }  
               const blob = new Blob([text], { type: 'text/vtt' });  
               const url = URL.createObjectURL(blob);  
               setSubtitleUrl(url);  
-          } catch (e) { console.error("Failed to process subtitles", e); alert("Failed to load subtitle file."); }  
+          } catch (e) {  
+              console.error("Failed to process subtitles", e);  
+              alert("Failed to load subtitle file.");  
+          }  
       }  
       setShowCCMenu(false);  
   };  
 
-  const removeSubtitle = () => { setSubtitleUrl(null); setCurrentSubtitleText(''); broadcast({ type: 'subtitle_update', payload: '' }); setShowCCMenu(false); }; 
+  const removeSubtitle = () => { 
+      setSubtitleUrl(null); 
+      setCurrentSubtitleText(''); 
+      broadcast({ type: 'subtitle_update', payload: '' }); 
+      setShowCCMenu(false); 
+  }; 
 
   const formatTime = (time: number) => {  
       if (!isFinite(time) || isNaN(time)) return "0:00";  
       const hours = Math.floor(time / 3600); 
       const minutes = Math.floor((time % 3600) / 60); 
       const seconds = Math.floor(time % 60); 
-      if (hours > 0) { return `${hours}:${minutes < 10 ? '0' : ''}${minutes}:${seconds < 10 ? '0' : ''}${seconds}`; } 
+        
+      if (hours > 0) { 
+          return `${hours}:${minutes < 10 ? '0' : ''}${minutes}:${seconds < 10 ? '0' : ''}${seconds}`; 
+      } 
       return `${minutes}:${seconds < 10 ? '0' : ''}${seconds}`; 
   };  
 
@@ -431,6 +467,7 @@ export const HostRoom: React.FC<HostRoomProps> = ({ onBack }) => {
     window.electron.onHostServerStarted((res: any) => { if (res.success || res.port) { setIsRoomStarted(true); setIsInitializing(false); setMembers([{ id: 'HOST', name: username, isHost: true }]); } else { alert("Failed to start server: " + res.error); setIsInitializing(false); } });  
     window.electron.onHostClientConnected(({ socketId }: any) => {  
         const p = new SimplePeer({ initiator: true, trickle: false, stream: streamRef.current || undefined });  
+
         p.on('signal', (data) => { const signalPayload = { type: 'signal', data, bitrate: 0 }; if (data.type === 'offer') { if (streamBitrateRef.current > 0) data.sdp = setVideoBitrate(data.sdp!, streamBitrateRef.current); signalPayload.bitrate = streamBitrateRef.current; } window.electron.hostSendSignal(socketId, signalPayload); });  
         p.on('connect', () => {   
             sendDataToPeer(p, { type: 'members', payload: members });   
@@ -442,6 +479,7 @@ export const HostRoom: React.FC<HostRoomProps> = ({ onBack }) => {
         p.on('close', () => handlePeerDisconnect(socketId));  
         peersRef.current.set(socketId, p);  
     });  
+
     window.electron.onHostSignalReceived(({ socketId, data }: any) => { if (data.type === 'signal') { const p = peersRef.current.get(socketId); if (p) p.signal(data.data); } });  
     window.electron.onHostClientDisconnected(({ socketId }: any) => handlePeerDisconnect(socketId));  
 
@@ -493,13 +531,17 @@ export const HostRoom: React.FC<HostRoomProps> = ({ onBack }) => {
       return () => { if (statsIntervalRef.current) clearInterval(statsIntervalRef.current); };  
   }, [isSharing, showNerdStats]);  
 
+  // --- AUDIO MONITORING FIX: PREVIEW VOLUME ---
   useEffect(() => {  
       if (fileVideoRef.current) fileVideoRef.current.volume = 1.0;  
+       
+      // Control preview volume for ALL modes (Screen, File, or VB-Cable)
       if (videoRef.current) {  
           videoRef.current.volume = localVolume;  
           videoRef.current.muted = (localVolume === 0);  
       }  
   }, [localVolume, sourceTab]);  
+  // ------------------------------------------
 
   const handlePeerDisconnect = (socketId: string) => { if (peersRef.current.has(socketId)) { peersRef.current.get(socketId)?.destroy(); peersRef.current.delete(socketId); } setMembers(prev => prev.filter(m => m.id !== socketId)); broadcast({ type: 'members', payload: members.filter(m => m.id !== socketId) }); };  
   const handleData = (socketId: string, data: any) => {   
@@ -512,7 +554,10 @@ export const HostRoom: React.FC<HostRoomProps> = ({ onBack }) => {
                 sendDataToPeer(p, { type: 'theme_change', payload: currentTheme });  
                 if(streamRef.current) sendDataToPeer(p, { type: 'bitrate_sync', payload: streamBitrateRef.current });  
                 sendDataToPeer(p, { type: 'cc_size', payload: ccSize });  
-                if (isSharing && movieTitle) { sendDataToPeer(p, { type: 'metadata', payload: { title: movieTitle } }); } 
+                 
+                if (isSharing && movieTitle) { 
+                    sendDataToPeer(p, { type: 'metadata', payload: { title: movieTitle } }); 
+                } 
             }  
         }  
         if (parsed.type === 'chat') { const msg = parsed.payload; setMessages(prev => { if (prev.some(m => m.id === msg.id)) return prev; return [...prev, msg]; }); broadcast({ type: 'chat', payload: msg }); }  
@@ -541,7 +586,10 @@ export const HostRoom: React.FC<HostRoomProps> = ({ onBack }) => {
           let finalStream: MediaStream;  
           let maxWidth = streamQuality === '4k' ? 3840 : (streamQuality === '1440p' ? 2560 : 1920);  
           let maxHeight = streamQuality === '4k' ? 2160 : (streamQuality === '1440p' ? 1440 : 1080);  
-          const videoConstraints = { mandatory: { chromeMediaSource: 'desktop', chromeMediaSourceId: sourceId, maxWidth, maxHeight, minFrameRate: streamFps, maxFrameRate: streamFps, googPowerSaving: false, googCpuOveruseDetection: false } };  
+
+          const videoConstraints = {  
+              mandatory: { chromeMediaSource: 'desktop', chromeMediaSourceId: sourceId, maxWidth, maxHeight, minFrameRate: streamFps, maxFrameRate: streamFps, googPowerSaving: false, googCpuOveruseDetection: false }  
+          };  
 
           if (sourceId === 'file') {  
               if (!fileVideoRef.current || !fileStreamUrl) { alert("No file selected!"); return; }  
@@ -559,23 +607,40 @@ export const HostRoom: React.FC<HostRoomProps> = ({ onBack }) => {
               sourceNode.connect(destination);   
 
               try { await fileVideoRef.current.play(); setIsPlayingFile(true); } catch (playErr) { console.warn(playErr); }  
+
               // @ts-ignore  
               const videoStream = fileVideoRef.current.captureStream(60);   
               if (videoStream.getTracks().length === 0) throw new Error("Failed to capture stream.");  
+
               finalStream = new MediaStream([...videoStream.getVideoTracks(), ...destination.stream.getAudioTracks()]);  
               setAudioSource('file');   
               setLocalVolume(0.5); 
+              
+              // Force detail content hint for file sharing (Fixes desktop muddiness)
               const vidTrack = videoStream.getVideoTracks()[0];
-              if (vidTrack && 'contentHint' in vidTrack) { vidTrack.contentHint = 'detail'; }
+              if (vidTrack && 'contentHint' in vidTrack) {
+                  vidTrack.contentHint = 'detail';
+              }
           }  
           else if (audioSource === 'none') {  
               finalStream = await navigator.mediaDevices.getUserMedia({ audio: false, video: videoConstraints } as any);  
           } else if (audioSource === 'system') {  
-              finalStream = await navigator.mediaDevices.getUserMedia({ audio: { mandatory: { chromeMediaSource: 'desktop', chromeMediaSourceId: sourceId } }, video: videoConstraints } as any);  
+              finalStream = await navigator.mediaDevices.getUserMedia({  
+                  audio: { mandatory: { chromeMediaSource: 'desktop', chromeMediaSourceId: sourceId } },  
+                  video: videoConstraints  
+              } as any);  
+              // Removed setLocalVolume(0) here to allow monitoring 
           } else {  
+              // --- AUDIO SYNC FIX FOR VB-CABLE / EXTERNAL MIC --- 
               const videoStream = await navigator.mediaDevices.getUserMedia({ audio: false, video: videoConstraints } as any);  
               try {  
-                  const audioStream = await navigator.mediaDevices.getUserMedia({ audio: { deviceId: { exact: audioSource }, autoGainControl: false, echoCancellation: false, noiseSuppression: false, channelCount: 2 } as any, video: false });  
+                  // 1. Get raw audio with relaxed latency (removed latency: 0) 
+                  const audioStream = await navigator.mediaDevices.getUserMedia({  
+                      audio: { deviceId: { exact: audioSource }, autoGainControl: false, echoCancellation: false, noiseSuppression: false, channelCount: 2 } as any,  
+                      video: false  
+                  });  
+
+                  // 2. Route through AudioContext to align clocks with the system 
                   if (!audioContextRef.current) {  
                       const AudioContext = window.AudioContext || (window as any).webkitAudioContext;  
                       audioContextRef.current = new AudioContext();  
@@ -584,17 +649,29 @@ export const HostRoom: React.FC<HostRoomProps> = ({ onBack }) => {
                   const source = ctx.createMediaStreamSource(audioStream);  
                   const destination = ctx.createMediaStreamDestination();  
                   source.connect(destination);  
+
+                  // 3. Combine processed audio with video 
                   finalStream = new MediaStream([...videoStream.getVideoTracks(), ...destination.stream.getAudioTracks()]);  
               } catch (audioErr) { console.error(audioErr); finalStream = videoStream; }  
+              // -------------------------------------------------- 
           }  
 
           streamRef.current = finalStream;  
-          if (videoRef.current) { videoRef.current.srcObject = finalStream; videoRef.current.play().catch(e => console.error("Preview Play Error", e)); }  
-          if (ambilightRef.current) { ambilightRef.current.srcObject = finalStream; ambilightRef.current.play().catch(() => {}); }  
+            
+          if (videoRef.current) {  
+              videoRef.current.srcObject = finalStream;  
+              videoRef.current.play().catch(e => console.error("Preview Play Error", e));  
+          }  
+          if (ambilightRef.current) {  
+              ambilightRef.current.srcObject = finalStream;  
+              ambilightRef.current.play().catch(() => {});  
+          }  
           broadcast({ type: 'bitrate_sync', payload: streamBitrate });  
           setIsSharing(true);  
           peersRef.current.forEach(p => p.addStream(finalStream));  
+            
           broadcast({ type: 'metadata', payload: { title: movieTitle } }); 
+
       } catch (e) { console.error(e); alert("Failed to start stream: " + e); }  
   };  
 
@@ -603,8 +680,24 @@ export const HostRoom: React.FC<HostRoomProps> = ({ onBack }) => {
       if (streamRef.current) { streamRef.current.getTracks().forEach(t => t.stop()); peersRef.current.forEach(p => p.removeStream(streamRef.current!)); streamRef.current = null; }  
       if (videoRef.current) videoRef.current.srcObject = null;  
       if (ambilightRef.current) ambilightRef.current.srcObject = null;  
-      if (fileVideoRef.current) { fileVideoRef.current.pause(); fileVideoRef.current.src = ""; fileVideoRef.current.load(); setIsPlayingFile(false); }  
-      setFileStreamUrl(null); setFileRawPath(null); setSelectedSourceId(null); setSourceTab('screen'); setSubtitleUrl(null); setCurrentSubtitleText(''); broadcast({ type: 'subtitle_update', payload: '' }); setMovieTitle(""); setIsSharing(false); lastStatsRef.current = null; setStreamOffset(0);
+        
+      if (fileVideoRef.current) {  
+          fileVideoRef.current.pause();  
+          fileVideoRef.current.src = "";   
+          fileVideoRef.current.load();      
+          setIsPlayingFile(false);  
+      }  
+      setFileStreamUrl(null); 
+      setFileRawPath(null);
+      setSelectedSourceId(null);  
+      setSourceTab('screen');   
+      setSubtitleUrl(null);  
+      setCurrentSubtitleText('');  
+      broadcast({ type: 'subtitle_update', payload: '' });  
+      setMovieTitle("");   
+      setIsSharing(false);  
+      lastStatsRef.current = null;  
+      setStreamOffset(0);
   };  
 
   const toggleMute = () => { if (localVolume > 0) setLocalVolume(0); else setLocalVolume(0.5); };  
@@ -645,20 +738,22 @@ export const HostRoom: React.FC<HostRoomProps> = ({ onBack }) => {
         <div ref={containerRef} className="flex-1 relative bg-black flex items-center justify-center overflow-hidden group select-none"  
             onMouseMove={handleMouseMove} onClick={() => setShowControls(!showControls)} onMouseEnter={clearControlsTimeout} onMouseLeave={resetControlsTimeout}>  
               
-            {/* FORCE REMOUNT on seek using remountKey */}
-            <video 
-                key={remountKey} 
+            {fileStreamUrl && (
+              <video 
+                key={fileStreamUrl} // CRITICAL: Forces re-mount on seek
                 ref={fileVideoRef} 
-                src={fileStreamUrl || ''} 
+                src={fileStreamUrl} 
                 className="absolute top-0 left-0 w-full h-full -z-50 opacity-100 pointer-events-none" 
                 style={{ visibility: 'visible' }} 
                 playsInline 
+                autoPlay 
                 crossOrigin="anonymous" 
-                onTimeUpdate={handleFileTimeUpdate} 
-                autoPlay
-            >  
-                {subtitleUrl && <track key={subtitleUrl} label="English" kind="subtitles" src={subtitleUrl} default />}  
-            </video>  
+                onTimeUpdate={handleFileTimeUpdate}
+                onLoadedData={() => setIsPlayingFile(true)}
+              >  
+                  {subtitleUrl && <track key={subtitleUrl} label="English" kind="subtitles" src={subtitleUrl} default />}  
+              </video>
+            )}
 
             <div className={`absolute top-0 left-0 right-0 z-20 p-4 flex justify-between pointer-events-none transition-opacity duration-300 ${showControls ? 'opacity-100' : 'opacity-0'}`} onClick={(e) => e.stopPropagation()}>  
                 <div className="pointer-events-auto flex items-center gap-2">  
@@ -867,23 +962,19 @@ export const HostRoom: React.FC<HostRoomProps> = ({ onBack }) => {
                           </div>
                         )}  
                         
-                        {/* --- REPLACED SEEKBAR LOGIC --- */}
                         {isSharing && audioSource === 'file' && (
                             <>
                                 <div className="w-px h-6 bg-white/10 mx-2"></div>
                                 <div className="flex items-center gap-2 min-w-[200px]">
-                                    <span className="text-[10px] font-mono text-gray-300 w-10 text-right">{formatTime(seekValue)}</span>
+                                    <span className="text-[10px] font-mono text-gray-300 w-10 text-right">{formatTime(currentTime)}</span>
                                     <input 
                                         type="range" 
                                         min={0} 
                                         max={duration || 100} 
-                                        step="0.1"
-                                        value={seekValue} 
-                                        onMouseDown={handleSeekStart}
-                                        onTouchStart={handleSeekStart}
-                                        onChange={handleSeekChange}
-                                        onMouseUp={handleSeekEnd}
-                                        onTouchEnd={handleSeekEnd}
+                                        value={currentTime} 
+                                        onChange={handleFileSeekChange} 
+                                        onMouseUp={handleSeekCommit}
+                                        onTouchEnd={handleSeekCommit}
                                         className={`w-40 h-1 rounded-lg appearance-none cursor-pointer bg-white/20 ${activeTheme.accent}`} 
                                     />
                                     <span className="text-[10px] font-mono text-gray-300 w-10">{formatTime(duration)}</span>
