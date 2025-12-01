@@ -1,4 +1,3 @@
-
 const { app, BrowserWindow, ipcMain, desktopCapturer, dialog } = require('electron'); 
 const path = require('path');
 const { exec } = require('child_process');
@@ -79,7 +78,8 @@ function startWebServer() {
           // Codec Logic
           command.videoCodec('libx264')
              .outputOptions([
-                 '-preset ultrafast', 
+                 '-preset veryfast', // Switched to veryfast for better quality
+                 '-crf 22',          // Added Constant Rate Factor for quality control
                  '-pix_fmt yuv420p',
                  '-profile:v main', // Ensure browser compatibility
                  '-g 30', // Keyframe every 30 frames (approx 1s)
