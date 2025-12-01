@@ -13,6 +13,9 @@ const ffprobePath = require('ffprobe-static').path.replace('app.asar', 'app.asar
 ffmpeg.setFfmpegPath(ffmpegPath);
 ffmpeg.setFfprobePath(ffprobePath);
 
+// KEEP DISABLED: HW Acceleration causes decoder cache bugs during seeking
+app.disableHardwareAcceleration();
+
 let mainWindow;
 let wss; 
 let guestWs; 
@@ -26,7 +29,6 @@ const WEB_PORT = 8080;
 function startWebServer() {
   const distPath = path.join(__dirname, '../dist');
   
-  // CORS Middleware for captureStream compatibility
   expressApp.use((req, res, next) => {
       res.header("Access-Control-Allow-Origin", "*");
       res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept");
@@ -38,62 +40,62 @@ function startWebServer() {
   // --- VIDEO STREAMING ENDPOINT ---
   expressApp.get('/stream', (req, res) => {
       const filePath = req.query.file;
-      const startTime = req.query.startTime || 0; // Start time in seconds
+      const startTime = req.query.startTime || 0; 
 
       if (!filePath || !fs.existsSync(filePath)) {
           return res.status(404).send('File not found');
       }
 
-      // Check file metadata first
       ffmpeg.ffprobe(filePath, (err, metadata) => {
           if (err) {
               console.error("FFprobe Error:", err);
               return res.status(500).send('Error analyzing file');
           }
 
-          // Smart Transcode Logic
-          // Ideally we want to copy the video stream if it's already h264
-          // But browsers need fragmented mp4 for streaming via pipe
-          
-          res.contentType('video/mp4');
+          // SWITCH TO WEBM: The "Silver Bullet" for Chrome Streaming
+          res.contentType('video/webm');
 
           const command = ffmpeg(filePath)
-              .seekInput(startTime) // SEEK: Jump to timestamp before processing
-              .format('mp4')
-              .outputOptions([
-                  '-movflags frag_keyframe+empty_moov+default_base_moof', // Fragmented MP4 for streaming
-                  '-reset_timestamps 1' // Reset timestamps so player thinks it starts at 0 (handled by frontend logic)
+              .inputOptions([
+                  `-ss ${startTime}`,       // Input seeking (fast & accurate)
+                  '-re'                     // Read at native framerate
               ])
+              .format('webm')               // Container: WebM (Much more robust than MP4 for streaming)
               .on('error', (err) => {
-                  if (!err.message.includes('Output stream closed')) {
+                  if (err.message && !err.message.includes('Output stream closed')) {
                       console.error('FFmpeg Error:', err);
                   }
               });
 
-          // Check video codec
-          const videoStream = metadata.streams.find(s => s.codec_type === 'video');
-          const isH264 = videoStream && videoStream.codec_name === 'h264';
-          
-          if (isH264) {
-              // REMUX: Fast copy
-              command.videoCodec('copy');
-          } else {
-              // TRANSCODE: Convert to H.264
-              // ultrafast preset for "buttery smooth" realtime performance
-              command.videoCodec('libx264')
-                     .outputOptions(['-preset ultrafast', '-tune zerolatency', '-pix_fmt yuv420p']);
-          }
+          // VIDEO: VP8 (libvpx)
+          // VP8 is Google's native codec. It handles "mid-stream" playback perfectly.
+          command.videoCodec('libvpx')
+                  .outputOptions([
+                      '-deadline realtime', // Critical for live transcoding speed
+                      '-cpu-used 4',        // Balance between speed and quality (0-5)
+                      '-b:v 4000k',         // 4Mbps Bitrate (High Quality)
+                      '-maxrate 6000k',     // Cap peaks
+                      '-bufsize 12000k',    // Buffer size
+                      '-qmin 10',           // Prevent blocky compression
+                      '-qmax 42',
+                      '-g 60',              // Keyframe every 2s is fine for WebM
+                      '-error-resilient 1'  // Helps browser recover if a frame is malformed
+                  ])
+                  // Ensure dimensions are even (VP8 requires this)
+                  .videoFilters('scale=trunc(iw/2)*2:trunc(ih/2)*2');
 
-          // Audio: Ensure AAC
-          const audioStream = metadata.streams.find(s => s.codec_type === 'audio');
-          if (audioStream && audioStream.codec_name === 'aac') {
-              command.audioCodec('copy');
-          } else {
-              command.audioCodec('aac').audioBitrate('128k');
-          }
+          // AUDIO: Vorbis (libvorbis)
+          // Vorbis is the native audio pair for WebM. Zero sync issues.
+          command.audioCodec('libvorbis')
+                 .audioChannels(2)
+                 .audioFrequency(44100)
+                 .audioBitrate('128k');
 
-          // Pipe directly to response
           command.pipe(res, { end: true });
+
+          req.on('close', () => {
+              try { command.kill(); } catch(e) {}
+          });
       });
   });
 
@@ -123,13 +125,13 @@ function createWindow() {
     width: 1280,
     height: 720,
     fullscreen: true,
-    show: false,       
+    show: false,        
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
       nodeIntegration: false,
       contextIsolation: true,
       sandbox: false, 
-      webSecurity: false // Disable webSecurity to allow capturing localhost video stream
+      webSecurity: false 
     },
     autoHideMenuBar: true,
     backgroundColor: '#000000',
@@ -149,13 +151,12 @@ function createWindow() {
   }
 }
 
-// ENABLE MACOS SYSTEM AUDIO LOOPBACK
 if (process.platform === 'darwin') {
     app.commandLine.appendSwitch('enable-features', 'MacLoopbackAudioForScreenShare,MacSckSystemAudioLoopbackOverride');
 }
 
 app.whenReady().then(() => {
-  startWebServer(); // Always start server for local streaming
+  startWebServer(); 
   createWindow();
 
   app.on('activate', function () {
@@ -169,10 +170,7 @@ app.on('window-all-closed', function () {
 
 // --- IPC Handlers ---
 
-ipcMain.on('toggle-web-server', (event, enable) => {
-    // Server is now always on for host streaming capabilities
-    // We can add logic here if we strictly want to toggle external access later
-});
+ipcMain.on('toggle-web-server', (event, enable) => { });
 
 ipcMain.on('set-window-opacity', (event, opacity) => {
     if (mainWindow && !mainWindow.isDestroyed()) {
@@ -182,7 +180,6 @@ ipcMain.on('set-window-opacity', (event, opacity) => {
 
 // --- FILE PICKER HANDLERS ---
 
-// Video File Picker
 ipcMain.handle('open-video-file', async () => {
   const { canceled, filePaths } = await dialog.showOpenDialog({
     properties: ['openFile'],
@@ -195,7 +192,19 @@ ipcMain.handle('open-video-file', async () => {
   }
 });
 
-// Subtitle File Picker
+ipcMain.handle('get-video-duration', async (event, filePath) => {
+    return new Promise((resolve, reject) => {
+        ffmpeg.ffprobe(filePath, (err, metadata) => {
+            if (err) {
+                console.error("FFprobe error:", err);
+                resolve(0);
+            } else {
+                resolve(metadata.format.duration || 0);
+            }
+        });
+    });
+});
+
 ipcMain.handle('open-subtitle-file', async () => {
   const { canceled, filePaths } = await dialog.showOpenDialog({
     properties: ['openFile'],
