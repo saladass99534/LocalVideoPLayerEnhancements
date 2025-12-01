@@ -372,24 +372,28 @@ export const HostRoom: React.FC<HostRoomProps> = ({ onBack }) => {
           if (fileVideoRef.current && fileRawPath) {
               setStreamOffset(time);
               
-              // Hard Reset Video Element for fMP4 stability
-              fileVideoRef.current.pause();
+              // AGGRESSIVE FLUSH STRATEGY for fMP4
+              const video = fileVideoRef.current;
+              video.pause();
               
-              // Remove src, load, then set new src
-              fileVideoRef.current.removeAttribute('src');
-              fileVideoRef.current.load();
+              // 1. Remove Source
+              video.removeAttribute('src');
+              video.load(); // Flush internal buffers
 
+              // 2. Generate new URL (with cache buster)
               const newUrl = `http://127.0.0.1:8080/stream?file=${encodeURIComponent(fileRawPath)}&startTime=${time}&_t=${Date.now()}`;
               
+              // 3. Wait a tiny bit for the renderer to clear the previous frame
               setTimeout(() => {
-                  if (fileVideoRef.current) {
-                      fileVideoRef.current.src = newUrl;
-                      fileVideoRef.current.load(); 
-                      fileVideoRef.current.currentTime = 0; // Explicitly set to 0 relative to new stream
-                      fileVideoRef.current.play().catch(console.error);
+                  if (video) {
+                      video.src = newUrl;
+                      video.load();
+                      // Video element time is always relative to the chunk start (0)
+                      // video.currentTime = 0; 
+                      video.play().catch(console.error);
                       setIsPlayingFile(true);
                   }
-              }, 200); 
+              }, 100); 
           }
       } else {
           // Local native file playback (file://)
