@@ -1,3 +1,8 @@
+Here is the full, updated **`main.cjs`**.
+
+This version includes the corrected FFmpeg logic: it forces transcoding, uses the `baseline` profile (no B-frames), removes manual fragmentation (to ensure every chunk starts with a keyframe), and adds audio resampling for sync.
+
+```javascript
 const { app, BrowserWindow, ipcMain, desktopCapturer, dialog } = require('electron'); 
 const path = require('path');
 const { exec } = require('child_process');
@@ -61,7 +66,7 @@ function startWebServer() {
                   '-movflags +frag_keyframe+empty_moov+default_base_moof', // Fragmented MP4 for streaming
                   '-reset_timestamps 1', // Reset timestamps so player thinks it starts at 0
                   '-avoid_negative_ts make_zero', // Critical for seeking stability
-                  '-frag_duration 100000' // Force small fragments (0.1s) for instant render
+                  // REMOVED: '-frag_duration 100000' -> Caused orphan frames. Rely on GOP size instead.
               ])
               .on('error', (err) => {
                   if (!err.message.includes('Output stream closed')) {
@@ -69,22 +74,23 @@ function startWebServer() {
                   }
               });
 
-          // FORCE TRANSCODE: Convert to H.264
-          // We removed the 'copy' logic here. Copying H.264 streams prevents accurate seeking 
-          // because the cut point rarely aligns with a Keyframe, causing the "stuck frame" issue.
-          // By forcing transcode, we ensure a fresh Keyframe is generated at the exact seek time.
+          // FORCE TRANSCODE: 
+          // 1. baseline profile disables B-frames (easiest for browser to decode)
+          // 2. -g 30 combined with frag_keyframe creates perfectly self-contained chunks
           command.videoCodec('libx264')
                   .outputOptions([
                       '-preset ultrafast', 
                       '-tune zerolatency', 
-                      '-pix_fmt yuv420p', 
+                      '-pix_fmt yuv420p',
+                      '-profile:v baseline', 
                       '-g 30', 
                       '-sc_threshold 0' 
                   ]);
 
-          // Audio: ALWAYS TRANSCODE to AAC to ensure perfect timestamp alignment with video
-          // This fixes the "Stuck Frame" issue where copied audio packets desync from reset video timestamps.
-          command.audioCodec('aac').audioBitrate('128k');
+          // Audio: Transcode to AAC + Async Resample to align timestamps perfectly
+          command.audioCodec('aac')
+                 .audioBitrate('128k')
+                 .audioFilter('aresample=async=1');
 
           // Pipe directly to response
           command.pipe(res, { end: true });
@@ -342,3 +348,4 @@ ipcMain.on('connect-to-host', (event, ip, port) => {
 ipcMain.on('guest-send-signal', (event, data) => {
   if (guestWs && guestWs.readyState === WebSocket.OPEN) guestWs.send(JSON.stringify(data));
 });
+```
