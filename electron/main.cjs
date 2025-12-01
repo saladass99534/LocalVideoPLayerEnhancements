@@ -61,7 +61,7 @@ function startWebServer() {
               ])
               .format('mp4')
               .outputOptions([
-                  '-movflags +frag_keyframe+empty_moov+default_base_moof', // Streamable MP4
+                  '-movflags +faststart+frag_keyframe+empty_moov+default_base_moof', // Streamable & Fast Start
                   '-fflags +genpts', // Generate new timestamps
                   '-avoid_negative_ts make_zero', // Ensure starts at 0
                   '-tune zerolatency',
