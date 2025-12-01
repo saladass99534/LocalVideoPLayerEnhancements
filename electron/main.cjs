@@ -1,3 +1,4 @@
+
 const { app, BrowserWindow, ipcMain, desktopCapturer, dialog } = require('electron'); 
 const path = require('path');
 const { exec } = require('child_process');
@@ -81,8 +82,9 @@ function startWebServer() {
           } else {
               // TRANSCODE: Convert to H.264
               // ultrafast preset for "buttery smooth" realtime performance
+              // -g 30 forces a keyframe every 30 frames (approx 0.5s-1s) for faster seeking recovery
               command.videoCodec('libx264')
-                     .outputOptions(['-preset ultrafast', '-tune zerolatency', '-pix_fmt yuv420p']);
+                     .outputOptions(['-preset ultrafast', '-tune zerolatency', '-pix_fmt yuv420p', '-g 30']);
           }
 
           // Audio: Ensure AAC
