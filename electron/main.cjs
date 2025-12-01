@@ -62,7 +62,8 @@ function startWebServer() {
               .format('mp4')
               .outputOptions([
                   '-movflags frag_keyframe+empty_moov+default_base_moof', // Fragmented MP4 for streaming
-                  '-reset_timestamps 1' // Reset timestamps so player thinks it starts at 0 (handled by frontend logic)
+                  '-reset_timestamps 1', // Reset timestamps so player thinks it starts at 0 (handled by frontend logic)
+                  '-avoid_negative_ts make_zero' // Critical for seeking stability
               ])
               .on('error', (err) => {
                   if (!err.message.includes('Output stream closed')) {
@@ -193,6 +194,20 @@ ipcMain.handle('open-video-file', async () => {
   } else {
     return filePaths[0];
   }
+});
+
+// Get Video Duration via FFprobe
+ipcMain.handle('get-video-duration', async (event, filePath) => {
+    return new Promise((resolve, reject) => {
+        ffmpeg.ffprobe(filePath, (err, metadata) => {
+            if (err) {
+                console.error("FFprobe error:", err);
+                resolve(0);
+            } else {
+                resolve(metadata.format.duration || 0);
+            }
+        });
+    });
 });
 
 // Subtitle File Picker
